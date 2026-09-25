@@ -1,0 +1,14 @@
+lab/data/
+lab/*.env
+secrets/
+*.key
+*.pem
+*.crt
+*.sqlite
+*.sqlite3
+*.db
+lab/media/
+lab/results/
+
+# Local build-image config (machine specific)
+.omavroom/

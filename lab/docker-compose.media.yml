@@ -1,0 +1,26 @@
+# Phase 0 overlay: synthetic lab media + a byte-accounting origin service that
+# stands in for a peer Jellymesh relay. Kept separate so lab/docker-compose.yml
+# stays exactly as scaffolded.
+services:
+  peer-origin:
+    image: python:3.12-slim
+    container_name: jellymesh-peer-origin
+    restart: unless-stopped
+    command: ["python3","/srv/origin.py","/srv/media","8099","/srv/out/origin-stats.json"]
+    volumes:
+      - ./media/origin.py:/srv/origin.py:ro
+      - ./media/origin:/srv/media:ro
+      - ./results:/srv/out
+
+  jellyfin-peer-a:
+    volumes:
+      - ./media/local-movies:/media/local-movies:ro
+      - ./media/remote-movies:/media/remote-movies:ro
+      - ./media/scale:/media/scale:ro
+      - ./media/local-music:/media/local-music:ro
+      - ./media/remote-music:/media/remote-music:ro
+
+  jellyfin-peer-b:
+    volumes:
+      - ./media/local-movies:/media/local-movies:ro
+      - ./media/remote-movies:/media/remote-movies:ro

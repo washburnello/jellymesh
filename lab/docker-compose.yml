@@ -1,0 +1,18 @@
+services:
+  jellyfin-peer-a:
+    image: jellyfin/jellyfin:10.11.11
+    container_name: jellymesh-jellyfin-peer-a
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:18096:8096"
+    volumes:
+      - ./data/peer-a:/config
+
+  jellyfin-peer-b:
+    image: jellyfin/jellyfin:10.11.11
+    container_name: jellymesh-jellyfin-peer-b
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:18097:8096"
+    volumes:
+      - ./data/peer-b:/config
