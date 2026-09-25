@@ -251,9 +251,39 @@ The rationale for mutual TLS over signed request envelopes or pairwise bearer to
 
 The public Jellymesh listener is separate from the local relay listener. The relay listener is never exposed publicly and never accepts peer traffic.
 
-#### Open: key rotation
+#### Key compromise and recovery
 
-Key rotation has no protocol yet. With no central directory, a peer would learn a replacement key from a rotation event signed by the outgoing key and propagated through the mesh. That construction fails in exactly the case that matters most, a compromised key, because the compromised key can sign its own replacement. Rotation and compromise recovery must be designed together, and they are a prerequisite for the Phase 5 key-rotation drill.
+There is no key rotation protocol, and this is deliberate.
+
+The obvious design is a rotation event signed by the outgoing key. That works
+for planned replacement and fails in the only case that matters. An attacker
+holding a stolen key can sign a rotation naming their own key as the
+replacement, quite possibly before the owner notices, and the group then trusts
+the attacker and locks out the legitimate node. The recovery mechanism becomes
+the attack.
+
+Recovery is therefore by **re-enrollment**. A node whose key is compromised is
+treated as a new node: the existing member is ejected through the normal signed
+revocation, the operator generates a fresh identity, and that identity is
+admitted through a new invitation and a fresh owner or administrator approval.
+The node's fingerprint changes, so it is a different peer by construction and
+no stale grant can survive.
+
+The cost is real and accepted: the node loses continuity, peers resynchronize
+its catalog from scratch, and its destination opt-out decisions about it are
+re-evaluated. For a group of roughly twenty people who can contact each other
+out of band, obtaining a new invitation is a reasonable recovery path, and it
+removes an entire class of failure rather than building a delicate mechanism to
+manage it.
+
+A printed recovery key, generated at install and held offline, is the natural
+later addition if operational experience shows re-enrollment is too disruptive.
+It is not required for the first release.
+
+Two consequences follow for the implementation. Ejection must revoke trust at
+the transport layer and not only in group membership, or a compromised key
+would still complete a mutual-TLS handshake. And an operator runbook must
+document the sequence, because recovery is a procedure rather than a feature.
 
 Enrollment is owner/admin-approved and member-sponsored:
 

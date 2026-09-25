@@ -116,7 +116,9 @@ behind them. They are listed so that the gap is explicit rather than implied.
 | C-PB-2 | An unavailable source fails playback cleanly without destructive catalog pruning | PENDING |
 | C-PB-3 | A source enforces a bandwidth ceiling per destination | PENDING — see assumption A-1 |
 | C-OP-1 | Audit events are recorded with secrets redacted | PENDING — the table exists, nothing writes to it |
-| C-OP-2 | Key rotation and compromise recovery have a defined protocol | PENDING — design-spec.md section 8 records this as open |
+| C-OP-2 | Compromise recovery is by re-enrollment: a fresh key is a distinct peer, and readmission requires a new invitation and fresh approval | DECIDED — see design-spec.md section 8. The mechanism it relies on is covered by C-ID-3, C-TR-4 and C-PO-5; what remains is C-OP-3 and an operator runbook |
+| C-OP-3 | Ejecting or revoking a member also revokes trust at the transport layer, so a compromised key cannot complete a handshake | PENDING — policy-layer ejection currently does not touch the peer trust store, and compromise recovery depends on it |
+| C-OP-4 | An operator runbook documents the compromise-recovery sequence | PENDING |
 
 ## 9. Recorded assumptions
 
