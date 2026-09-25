@@ -56,6 +56,30 @@ This document records decisions that are settled enough to continue planning and
 - Reliability: the product should tolerate unattended home-server operation and recover safely from outages.
 - Offline awareness: heartbeat and stale-provider handling are desired; visible greyed-out stock-client cards are a stretch goal.
 
+## Assumptions pending ratification
+
+These were open product decisions blocking implementation. Each is resolved by a
+documented assumption in [conformance.md](conformance.md) section 9 so that work
+can proceed, and each can be overridden. They are listed here because they are
+decisions, not findings.
+
+- **Source-side bandwidth ceiling (A-1).** A source enforces a configurable
+  per-destination bitrate ceiling and requests a transcoded rendition from its
+  own Jellyfin when the ceiling would be exceeded. Resolves plan-review A4,
+  which is otherwise a v1 blocker: the relay is a byte-exact pass-through, so
+  without a ceiling one 4K remux saturates the source household's uplink.
+- **No provider identifiers in generated paths (A-2).** Generated directories
+  use a Jellymesh-internal identifier; provider IDs travel in NFO only. Two
+  synthetic identifiers each resolved to unrelated real titles during Phase 0,
+  one of them adult.
+- **Music is out of scope for v1 (A-3).** Federated music duplicated the artist
+  and album tree and NFO metadata did not repair it. If it returns, the shape is
+  a separate `Friends Music` library so duplication is contained.
+- **Integrated libraries with a Jellymesh-driven merge graph (A-4).** The
+  extraction risk that argued against integration was measured and disproven,
+  and the Jellyfin merge API was validated as a mitigation. Jellymesh must own
+  and maintain the merge graph.
+
 ## Follow-up questions
 
 ### Playback

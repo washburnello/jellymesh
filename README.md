@@ -22,10 +22,13 @@ Jellymesh is a planned federation layer for independent Jellyfin servers. Each h
 
 ## Documentation
 
+- [Conformance criteria](docs/conformance.md) — the objective target, run with `./scripts/verify.sh`
 - [Design specification](docs/design-spec.md)
 - [Phase 0 validation plan](docs/phase-0-lab.md)
 - [Follow-up decisions](docs/follow-up-decisions.md)
 - [Discovery log](docs/discovery-log.md)
+- [Plan review](docs/plan-review.md)
+- [Phase 0 results](docs/phase-0-results.md)
 
 ## Working direction
 
