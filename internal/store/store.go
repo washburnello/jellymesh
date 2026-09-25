@@ -68,6 +68,13 @@ func Open(path string) (*DB, error) {
 	// handful of peers on five-minute heartbeats and hourly syncs, so the lost
 	// read concurrency costs nothing measurable, and the failure mode it
 	// removes is the kind that only appears under load in production.
+	//
+	// This is load-bearing beyond performance. PeerRepository.Upsert detects a
+	// fingerprint collision with a read followed by a write, which is only
+	// race-free because no second connection can interleave between them. Two
+	// nodes sharing a fingerprint would mean one can impersonate the other, so
+	// raising this limit requires replacing that check with a constraint-based
+	// guard first.
 	handle.SetMaxOpenConns(1)
 	handle.SetMaxIdleConns(1)
 	handle.SetConnMaxLifetime(0)
@@ -170,3 +177,17 @@ func ParseTime(value string) (time.Time, error) {
 // nowUTC is a package-level seam so that migration timestamps can be made
 // deterministic in tests without threading a clock through Open.
 var nowUTC = func() time.Time { return time.Now().UTC() }
+
+// rowScanner is satisfied by both *sql.Row and *sql.Rows, so a repository can
+// share one scan function between a single-row lookup and a list query.
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+// boolToInt encodes a Go bool for SQLite, which has no native boolean type.
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
