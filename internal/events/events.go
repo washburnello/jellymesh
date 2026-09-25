@@ -383,6 +383,25 @@ func NewSequenceGuard() *SequenceGuard {
 // effect on another, since a single owner or administrator issues events
 // for exactly one group and there is no shared ordering between groups to
 // protect.
+// Seed establishes a group's high-water mark from durable state.
+//
+// A guard is in-memory and starts empty, so a node that has just restarted
+// would otherwise accept an event whose sequence it had already superseded
+// before the restart. That reopens exactly the replay window the guard exists
+// to close, and it does so silently: nothing looks wrong, the signature is
+// valid, and the event applies. Callers must seed from the persisted
+// membership sequence before trusting a guard.
+//
+// Seeding never lowers a mark, so calling it twice, or after events have
+// already been admitted, cannot weaken the guard.
+func (guard *SequenceGuard) Seed(groupID string, sequence uint64) {
+	guard.mutex.Lock()
+	defer guard.mutex.Unlock()
+	if sequence > guard.highest[groupID] {
+		guard.highest[groupID] = sequence
+	}
+}
+
 func (guard *SequenceGuard) Admit(groupID string, sequence uint64) error {
 	if sequence == 0 {
 		return ErrInvalidSequence

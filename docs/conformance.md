@@ -68,8 +68,8 @@ findings in [plan-review.md](plan-review.md).
 | C-PO-7 | Owner succession is never applied on a local timer; it requires attestations from a quorum of other members | `TestSuccessionRequiresAQuorumOfAttestations`, `TestSuccessionRejectsManufacturedQuorum`, `TestOnlyTheEligibleSuccessorMayClaim`, `TestClaimBeforeTheDeadlineIsRejected` | PASS |
 | C-PO-8 | Membership, roles, publications, opt-outs, and invitations survive a restart, and behaviour after a reload matches behaviour before it | `TestMembershipRepositorySaveAndLoadRoundTrip`, `TestMembershipRepositorySaveUpdatesRatherThanDuplicating`, `TestMembershipRepositoryLoadUnknownGroupReturnsNotFound`, `TestMembershipRepositoryDelete`, `TestMembershipRepositoryListGroupIDs` | PASS |
 | C-PO-9 | Group events are signed, tamper-evident across every field, domain-separated by kind, and replay-guarded by sequence | `TestMutatingAnySingleFieldInvalidatesTheSignature`, `TestVerifyWithDifferentNodesPublicKeyFailsWithInvalidSignature`, `TestIssuerMismatchWhenSignerLiesAboutItsOwnIdentity`, `TestAdmissionSignatureCannotBePresentedAsRevocation`, `TestSequenceGuardRejectsReplayAndStaleAcceptsMonotonicIncrease` | PASS |
-| C-PO-10 | An event is applied only when its issuer is the owner or an administrator of that group; a correctly signed event from an ordinary member is refused | none yet | PENDING — `internal/events` verifies signatures but has no knowledge of roles, so any keypair currently produces a valid envelope. The authorization half must be enforced by the caller |
-| C-PO-11 | The replay guard is seeded from durable state on restart, so an already-superseded sequence cannot be re-admitted by a freshly started node | none yet | PENDING — `SequenceGuard` is in-memory and starts empty; `MembershipSequence` is persisted and must seed it |
+| C-PO-10 | An event is applied only when its issuer is the owner or an administrator of that group, and the issuer's fingerprint matches the peer record; a correctly signed event from an ordinary member is refused | `TestCorrectlySignedEventFromOrdinaryMemberIsRefused`, `TestIssuerNameCannotBeBorrowedFromAnAdministrator`, `TestAdministratorMayIssueMembershipEvents`, `TestUnknownIssuerIsRefused` | PASS |
+| C-PO-11 | The replay guard is seeded from durable state on restart, so an already-superseded sequence cannot be re-admitted by a freshly started node | `TestReplayGuardIsSeededFromDurableSequence`, `TestSeedNeverLowersTheHighWaterMark` | PASS |
 | C-PO-12 | A block is persisted for a peer that has never connected | none yet | PENDING — `peers.blocked` requires an existing peer row with a unique fingerprint, so blocking an unseen node id is currently not durable |
 
 ## 6. Durable state
@@ -117,7 +117,7 @@ behind them. They are listed so that the gap is explicit rather than implied.
 | C-PB-3 | A source enforces a bandwidth ceiling per destination | PENDING — see assumption A-1 |
 | C-OP-1 | Audit events are recorded with secrets redacted | PENDING — the table exists, nothing writes to it |
 | C-OP-2 | Compromise recovery is by re-enrollment: a fresh key is a distinct peer, and readmission requires a new invitation and fresh approval | DECIDED — see design-spec.md section 8. The mechanism it relies on is covered by C-ID-3, C-TR-4 and C-PO-5; what remains is C-OP-3 and an operator runbook |
-| C-OP-3 | Ejecting or revoking a member also revokes trust at the transport layer, so a compromised key cannot complete a handshake | PENDING — policy-layer ejection currently does not touch the peer trust store, and compromise recovery depends on it |
+| C-OP-3 | Ejecting or revoking a member also revokes trust at the transport layer, so a compromised key cannot complete a handshake | `TestEjectionRevokesTransportTrust`, `TestEjectionByANonAdministratorChangesNothing`, `TestAdministratorMayIssueMembershipEvents` | PASS |
 | C-OP-4 | An operator runbook documents the compromise-recovery sequence | PENDING |
 
 ## 9. Recorded assumptions
