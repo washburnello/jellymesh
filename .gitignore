@@ -12,3 +12,6 @@ lab/results/
 
 # Local build-image config (machine specific)
 .omavroom/
+
+# Agent worktrees
+.claude/
