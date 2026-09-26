@@ -1,7 +1,7 @@
 # Jellymesh Conformance Criteria
 
 Status: Executable acceptance criteria
-Date: 2026-09-25
+Date: 2026-09-26
 Verify with: `./scripts/verify.sh`
 
 ## 1. Purpose
@@ -43,7 +43,8 @@ findings in [plan-review.md](plan-review.md).
 | C-TR-2 | An unknown or untrusted peer is refused | `TestServerRejectsUntrustedClient` | PASS |
 | C-TR-3 | Revoking trust refuses subsequent handshakes | `TestRevokedFingerprintFailsSubsequentHandshake` | PASS |
 | C-TR-4 | Two node identities may not share a fingerprint | `TestFingerprintCollisionBetweenTwoNodesIsRejected` | PASS |
-| C-TR-5 | A successful handshake is not proof of authorization; the dial path must treat reachability and authorization separately | `TestClientHandshakeMayReturnNilDespiteServerRejection` | PASS |
+| C-TR-5 | Under TLS 1.3 a client handshake reports success even when the server rejects the client certificate, and the rejection surfaces on first I/O (library behaviour, pinned so the caution on `ClientTLSConfig` cannot silently become false) | `TestClientHandshakeMayReturnNilDespiteServerRejection` | PASS |
+| C-TR-8 | The dial path treats reachability and authorization separately, and does not consider a peer to have accepted this node until first I/O succeeds | none yet | PENDING — no dial path exists. Previously claimed PASS under C-TR-5 on the strength of a test that exercises only crypto/tls |
 | C-TR-6 | Peer authorization is durable and survives restart | `TestPeerRepositoryAsTrustStorePerformsRealHandshake` | PASS |
 | C-TR-7 | A known node's key cannot be replaced in place; a new key is a new peer that starts untrusted | `TestUpsertRefusesToChangeAKnownNodesFingerprint` | PASS |
 
@@ -67,13 +68,17 @@ findings in [plan-review.md](plan-review.md).
 | C-PO-4 | An administrator cannot eject another administrator or the owner, whether locally or through a signed revocation | `TestAdministratorCannotEjectAnotherAdministrator`, `TestOwnerCannotEjectItself`, `TestVerifiedRevocationCannotTargetOwner`, `TestVerifiedRevocationEnforcesAdministratorProtection`, `TestSignedRevocationOfAnAdministratorByAnAdministratorIsRefused` | PASS |
 | C-PO-5 | Ejection removes future participation and purges the member's publications; rejoining requires a fresh invitation and approval | `TestOwnerCanEjectAndRequireFreshAdmissionToRejoin`, `TestVerifiedRevocationPropagatesEjection` | PASS |
 | C-PO-6 | A joining server must offer at least one non-empty library before admission, satisfiable before it is a member | `TestAdmissionRuleIsSatisfiedByStagedCandidates`, `TestMemberCannotStageCandidates` | PASS |
-| C-PO-7 | Owner succession is never applied on a local timer; it requires attestations from a quorum of other members | `TestSuccessionRequiresAQuorumOfAttestations`, `TestSuccessionRejectsManufacturedQuorum`, `TestOnlyTheEligibleSuccessorMayClaim`, `TestClaimBeforeTheDeadlineIsRejected` | PASS |
+| C-PO-7 | Owner succession is never applied on a local timer; a claim is accepted only from the eligible successor, after the deadline, with a quorum of distinct, eligible attestors | `TestSuccessionRequiresAQuorumOfAttestations`, `TestSuccessionRejectsManufacturedQuorum`, `TestOnlyTheEligibleSuccessorMayClaim`, `TestClaimBeforeTheDeadlineIsRejected` | PASS |
+| C-PO-14 | Each absence attestation is signed by its attestor and verified, so a claimant cannot author the quorum itself | none yet | PENDING — `group.AbsenceAttestation` is an unsigned struct; a probe claimed ownership with two attestations the claimant wrote |
+| C-PO-15 | A former owner that returns after a successful succession claim is fenced and cannot issue events as owner | none yet | PENDING |
 | C-PO-8 | Membership, roles, publications, opt-outs, and invitations survive a restart, and behaviour after a reload matches behaviour before it | `TestMembershipRepositorySaveAndLoadRoundTrip`, `TestMembershipRepositorySaveUpdatesRatherThanDuplicating`, `TestMembershipRepositoryLoadUnknownGroupReturnsNotFound`, `TestMembershipRepositoryDelete`, `TestMembershipRepositoryListGroupIDs` | PASS |
 | C-PO-9 | Group events are signed, tamper-evident across every field, domain-separated by kind, and replay-guarded by sequence | `TestMutatingAnySingleFieldInvalidatesTheSignature`, `TestVerifyWithDifferentNodesPublicKeyFailsWithInvalidSignature`, `TestIssuerMismatchWhenSignerLiesAboutItsOwnIdentity`, `TestAdmissionSignatureCannotBePresentedAsRevocation`, `TestSequenceGuardRejectsReplayAndStaleAcceptsMonotonicIncrease` | PASS |
 | C-PO-10 | An event is applied only when its issuer is the owner or an administrator of that group, and the issuer's fingerprint matches the peer record; a correctly signed event from an ordinary member is refused | `TestCorrectlySignedEventFromOrdinaryMemberIsRefused`, `TestIssuerNameCannotBeBorrowedFromAnAdministrator`, `TestAdministratorMayIssueMembershipEvents`, `TestUnknownIssuerIsRefused` | PASS |
 | C-PO-11 | The replay guard is seeded from durable state on restart, so an already-superseded sequence cannot be re-admitted by a freshly started node | `TestReplayGuardIsSeededFromDurableSequence`, `TestSeedNeverLowersTheHighWaterMark` | PASS |
 | C-PO-12 | A block is persisted for a peer that has never connected, applies when it appears, and survives removal of its peer record | `TestBlockOfAnUnseenPeerIsDurableAndApplies` | PASS |
 | C-PO-13 | An event refused after verification does not consume its sequence number, and a payload's sequence must match its signed envelope's | `TestRefusedEventDoesNotConsumeItsSequence`, `TestPayloadSequenceMustMatchEnvelopeSequence`, `TestSequenceGuardCheckDoesNotRecord` | PASS |
+| C-PO-16 | A signed admission can be applied by every member, including ones that never saw the invitation, and binds the admitted node's fingerprint | none yet | PENDING — `ApplyVerifiedAdmission` requires a local approved invitation record, which only the approving node has, so every other member refuses the admission |
+| C-PO-17 | Group events have one order across all members; a node that sees a gap fetches the missing events rather than dropping them, and two administrators cannot claim the same slot | none yet | PENDING — today an event that arrives after a higher sequence is rejected permanently. Needs the replication design (which state is group-replicated and which is node-local) before enrollment |
 
 ## 6. Durable state
 
@@ -110,6 +115,7 @@ behind them. They are listed so that the gap is explicit rather than implied.
 | C-PR-2 | An opted-out library is absent from the same surfaces | PENDING |
 | C-PR-3 | Generated artifacts and logs contain no credentials; a `.strm` holds a local relay reference and never a peer URL or bearer token | PENDING |
 | C-PR-4 | Local Jellyfin library permissions are a browse boundary only and are not relied on for playback authorization | MANUAL — measured in phase-0-results.md section 8; the design must not assume otherwise |
+| C-PR-5 | The relay listener cannot be reached from outside the host, and requests to it are authorized locally rather than by bind address alone | none yet | PENDING — config accepts any relay address; plan-review.md notes loopback is insufficient once Jellyfin and Jellymesh are in separate network namespaces |
 | C-CA-1 | Catalog sync is incremental, paginated, and idempotent, rejecting stale revisions | PENDING |
 | C-CA-2 | A confirmed tombstone removes the item immediately while retention preserves metadata for the grace period | PENDING |
 | C-CA-3 | A library's root path set is recorded at publication; changing it pauses publication pending re-confirmation | PENDING — plan-review C1 |

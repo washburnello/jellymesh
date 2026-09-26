@@ -3,8 +3,11 @@
 // The listener split is deliberate. The federation listener is public and
 // authenticates peers with mutual TLS. The relay listener is local-only, serves
 // generated media references to the co-located Jellyfin, and must never be
-// reachable from outside the host. Keeping them as separate sockets means a
-// single misconfiguration cannot expose the relay to the internet.
+// reachable from outside the host. Keeping them as separate sockets means the
+// federation listener's configuration cannot also expose the relay. Nothing
+// here yet stops the relay itself being bound to a public address, and a
+// loopback bind alone is not sufficient once Jellyfin runs in its own network
+// namespace; both are C-PR-5.
 package config
 
 import (

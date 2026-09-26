@@ -87,6 +87,8 @@ Related: a new node joining a twenty-node group performs nineteen full initial s
 ### B1. Owner succession is a consensus problem with no consensus algorithm
 
 > **RESOLVED, 2026-09-24.** `Advance` no longer promotes on a local timer; it reports that a claim has become *eligible*. `ClaimOwnership` installs an owner only against absence attestations from a strict majority of non-owner members, rejecting self-attestation, owner attestation, non-members, duplicates, and observations too recent to support the claim. The confirmed rule about who succeeds is unchanged. Implemented in `internal/group/roles.go` with eight tests including three adversarial cases.
+>
+> **REOPENED IN PART, 2026-09-26.** The attestations are not signed, so a claimant can write the quorum itself (C-PO-14), and a returning former owner is not fenced (C-PO-15). The paragraph below on conflicting signed membership events was not addressed by the succession change and remains open as C-PO-17.
 
 `discovery-log.md` lists split-brain ownership as a risk and does not resolve it. `internal/group/roles.go:204` makes the gap concrete: `Advance()` is driven purely by the local clock and the local view of the administrator set.
 
