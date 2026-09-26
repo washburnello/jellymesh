@@ -18,7 +18,7 @@ Jellymesh is a planned federation layer for independent Jellyfin servers. Each h
 - The resource policy under `internal/limits/` defaults to one concurrent remote transcode per destination while leaving direct play unrestricted.
 - The settings model under `internal/settings/` covers published libraries, source opt-outs, transcode limits, and sync-health visibility.
 - The identity model under `internal/identity/` merges work only on strong media identity and leaves ambiguous items separate.
-- The replicated group log under `internal/grouplog/` is the source of group membership: signed, hash-chained events that only the owner sequences, administrator decisions as signed proposals, and succession by signed attestations that fences the former owner. `internal/membership/` keeps it durable and derives transport trust from its roster.
+- The replicated group log under `internal/grouplog/` is the source of group membership: signed, hash-chained events that only the owner sequences, administrator decisions as signed proposals, and succession by signed attestations that fences the former owner. `internal/membership/` keeps it durable and derives transport trust from its roster. `internal/replication/` serves and fetches it between members over mutual TLS.
 - The owner-absence watch under `internal/group/` tracks this node's own view of the owner's availability: when a succession claim becomes eligible, and when a group with no owner or administrators dissolves.
 
 ## Documentation

@@ -343,7 +343,8 @@ implemented in `internal/grouplog`, stored by `store.GroupLogRepository`, and
 held by `membership.Group`, which derives transport trust from it.
 `internal/policy` consults the roster rather than keeping one, and
 `internal/group` is reduced to this node's own observation of the owner's
-availability. The replication protocol follows.
+availability. `internal/replication` serves and fetches the log over mutual
+TLS. Enrollment against the log follows.
 
 Everything above describes what the group decides; this describes how every member comes to
 agree on it. Without it, signed events were verifiable but had no order: two
@@ -421,13 +422,26 @@ downloads back to a root it received out of band from someone it trusts.
 
 Replication is pull-based over the existing mutual-TLS connections:
 
-1. Every heartbeat exchanges each side's log head (`epoch`, `sequence`, hash).
+1. Every heartbeat exchanges each side's log head (`epoch`, `sequence`, hash),
+   at `GET /jellymesh/v1/groups/{group}/log/head`.
 2. A node that is behind requests the missing range from that peer, or from any
-   other member. Events verify themselves, so a relaying peer cannot forge
-   them; it can only withhold them, which asking a different peer defeats.
+   other member, at `GET /jellymesh/v1/groups/{group}/log/events?after=N`, in
+   pages of at most 256. Events verify themselves, so a relaying peer cannot
+   forge them; it can only withhold them, which asking a different peer
+   defeats.
 3. Events are applied strictly in order. An event that does not extend the
    current head is held back or refetched. It is never skipped, and a gap never
    causes an event to be dropped.
+4. A peer on a later epoch may replace events this node holds from the closed
+   one, at a point not known in advance, so the log is refetched from genesis.
+   Events already held return as duplicates. For logs of this size that is
+   cheaper than searching for the fork.
+5. A peer level with this node in the same epoch but with a different head hash
+   is asked for the event at its head. Either it is a duplicate, or two events
+   claim one slot, which is equivocation and halts the log.
+6. Each request is authorized against the one group it names: the connection's
+   key must belong to a member of that group. Anything else is answered as not
+   found, so a node serving several groups reveals nothing about the others.
 
 A new member downloads the whole log from genesis. For a group of this size
 the log stays small, so compaction is deferred.
