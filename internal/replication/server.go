@@ -30,7 +30,8 @@ const (
 
 	headPath      = "/jellymesh/v1/groups/{group}/log/head"
 	eventsPath    = "/jellymesh/v1/groups/{group}/log/events"
-	proposalsPath = "/jellymesh/v1/groups/{group}/proposals"
+	proposalsPath    = "/jellymesh/v1/groups/{group}/proposals"
+	attestationsPath = "/jellymesh/v1/groups/{group}/attestations"
 
 	// maxProposalBytes bounds a submitted proposal; the largest, an
 	// admission, is well under a kilobyte.
@@ -44,6 +45,16 @@ type Server struct {
 	groups   map[string]*membership.Group
 	identity *node.Identity
 	now      func() time.Time
+	// attestations receives absence attestations sent to this node as a
+	// group's eligible successor. Without one, attestations are refused.
+	attestations func(groupID string, attestation grouplog.Attestation) error
+}
+
+// ReceiveAttestations sets where attestations sent to this node go.
+func (server *Server) ReceiveAttestations(receive func(groupID string, attestation grouplog.Attestation) error) {
+	server.mutex.Lock()
+	defer server.mutex.Unlock()
+	server.attestations = receive
 }
 
 // NewServer returns a server that signs as identity when it sequences a
@@ -94,6 +105,42 @@ func (server *Server) Register(_ *http.ServeMux, members *http.ServeMux) {
 	members.HandleFunc("GET "+headPath, server.head)
 	members.HandleFunc("GET "+eventsPath, server.events)
 	members.HandleFunc("POST "+proposalsPath, server.propose)
+	members.HandleFunc("POST "+attestationsPath, server.attest)
+}
+
+// attest accepts an absence attestation for this node to hold towards a
+// succession claim. Like a proposal, it is authorized by its own signature,
+// which the receiver checks against the log before keeping it.
+func (server *Server) attest(response http.ResponseWriter, request *http.Request) {
+	group, ok := server.authorize(response, request)
+	if !ok {
+		return
+	}
+	var attestation grouplog.Attestation
+	decoder := json.NewDecoder(io.LimitReader(request.Body, maxProposalBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&attestation); err != nil {
+		http.Error(response, "malformed attestation", http.StatusBadRequest)
+		return
+	}
+	var verifyErr error
+	_ = group.View(func(state *grouplog.State) { verifyErr = state.VerifyAttestation(attestation) })
+	if verifyErr != nil {
+		http.Error(response, verifyErr.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	server.mutex.RLock()
+	receive := server.attestations
+	server.mutex.RUnlock()
+	if receive == nil {
+		http.Error(response, "this node is not collecting attestations", http.StatusConflict)
+		return
+	}
+	if err := receive(request.PathValue("group"), attestation); err != nil {
+		http.Error(response, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	response.WriteHeader(http.StatusNoContent)
 }
 
 // authorize returns the requested group if the connection's authenticated

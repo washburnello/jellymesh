@@ -419,3 +419,42 @@ func TestANonMemberCannotSubmit(t *testing.T) {
 		t.Fatalf("error = %v, want ErrRefusedByPeer", err)
 	}
 }
+
+// C-PO-24: the successor's node keeps only attestations that verify against
+// its log, and a node not collecting them says so.
+func TestTheSuccessorKeepsOnlyValidAttestations(t *testing.T) {
+	m := newMesh(t, "walnut", "maple", "birch")
+	var kept []grouplog.Attestation
+	m.members["walnut"].server.ReceiveAttestations(func(_ string, attestation grouplog.Attestation) error {
+		kept = append(kept, attestation)
+		return nil
+	})
+	var state *grouplog.State
+	m.members["maple"].group.View(func(s *grouplog.State) { state = s })
+	windowEnd := now.Add(group.OwnerSuccessionTimeout + time.Hour)
+
+	valid, _ := grouplog.Attest(m.members["maple"].identity, "maple", state, now, windowEnd)
+	tooEarly, _ := grouplog.Attest(m.members["maple"].identity, "maple", state, now, now.Add(time.Hour))
+	forged, _ := grouplog.Attest(m.members["maple"].identity, "maple", state, now, windowEnd)
+	forged.AttestorID = "birch"
+	fromSuccessor, _ := grouplog.Attest(m.members["walnut"].identity, "walnut", state, now, windowEnd)
+
+	client := m.client("maple")
+	for name, attestation := range map[string]grouplog.Attestation{"too early": tooEarly, "forged": forged, "from the successor": fromSuccessor} {
+		if err := client.SendAttestation(context.Background(), m.peer("walnut"), "group-1", attestation); !errors.Is(err, ErrProposalRefused) {
+			t.Errorf("%s: error = %v, want a refusal", name, err)
+		}
+	}
+	if len(kept) != 0 {
+		t.Fatalf("invalid attestations were kept: %d", len(kept))
+	}
+	if err := client.SendAttestation(context.Background(), m.peer("walnut"), "group-1", valid); err != nil {
+		t.Fatalf("valid attestation: %v", err)
+	}
+	if len(kept) != 1 {
+		t.Fatal("the valid attestation should be kept")
+	}
+	if err := client.SendAttestation(context.Background(), m.peer("birch"), "group-1", valid); !errors.Is(err, ErrNotOwner) {
+		t.Fatalf("a node not collecting: error = %v, want a 409", err)
+	}
+}

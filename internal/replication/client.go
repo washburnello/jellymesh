@@ -120,6 +120,16 @@ func (client *Client) Submit(ctx context.Context, owner Peer, groupID string, pr
 	return event, err
 }
 
+// SendAttestation delivers this node's absence attestation to the group's
+// eligible successor.
+func (client *Client) SendAttestation(ctx context.Context, successor Peer, groupID string, attestation grouplog.Attestation) error {
+	body, err := json.Marshal(attestation)
+	if err != nil {
+		return err
+	}
+	return client.do(ctx, successor, http.MethodPost, "/jellymesh/v1/groups/"+url.PathEscape(groupID)+"/attestations", body, nil)
+}
+
 func (client *Client) get(ctx context.Context, peer Peer, path string, into any) error {
 	return client.do(ctx, peer, http.MethodGet, path, nil, into)
 }
@@ -145,6 +155,8 @@ func (client *Client) do(ctx context.Context, peer Peer, method string, path str
 	defer response.Body.Close()
 	switch response.StatusCode {
 	case http.StatusOK:
+	case http.StatusNoContent:
+		return nil
 	case http.StatusNotFound:
 		return ErrNotServed
 	case http.StatusConflict:

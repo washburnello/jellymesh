@@ -462,6 +462,18 @@ func (state *State) validateSuccession(event Event) (func(), error) {
 	}, nil
 }
 
+// VerifyAttestation checks an attestation as the eligible successor's claim
+// would: signed by an active member other than the owner and the successor,
+// covering a full absence window, and naming a head this log contains. The
+// successor uses it to refuse junk before holding an attestation for a claim.
+func (state *State) VerifyAttestation(attestation Attestation) error {
+	successor, ok := state.EligibleSuccessor()
+	if !ok {
+		return ErrNotSuccessor
+	}
+	return state.validateAttestation(attestation, successor, map[string]bool{})
+}
+
 func (state *State) validateAttestation(attestation Attestation, claimantID string, seen map[string]bool) error {
 	attestorID := attestation.AttestorID
 	switch {

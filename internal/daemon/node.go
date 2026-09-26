@@ -20,6 +20,7 @@ import (
 	"jellymesh/internal/config"
 	"jellymesh/internal/enrollment"
 	"jellymesh/internal/federation"
+	groupwatch "jellymesh/internal/group"
 	"jellymesh/internal/grouplog"
 	"jellymesh/internal/membership"
 	"jellymesh/internal/node"
@@ -51,9 +52,10 @@ type Node struct {
 	server   *replication.Server
 	client   *replication.Client
 	logger   *log.Logger
-	now      func() time.Time
+	watches  *store.OwnerWatchRepository
 
 	mutex sync.Mutex
+	clock func() time.Time
 	group *groupRuntime
 }
 
@@ -61,6 +63,31 @@ type groupRuntime struct {
 	id      string
 	group   *membership.Group
 	inviter *enrollment.Inviter
+
+	// watch is this node's view of the owner's reachability, and
+	// attestations are those other members have sent this node while it is
+	// the eligible successor, keyed by attestor, for the epoch they name.
+	succession   sync.Mutex
+	watch        *groupwatch.Watch
+	attestations map[string]grouplog.Attestation
+}
+
+// now reads the node's clock, which tests may replace with SetClock.
+func (n *Node) now() time.Time {
+	n.mutex.Lock()
+	defer n.mutex.Unlock()
+	if n.clock == nil {
+		return time.Now()
+	}
+	return n.clock()
+}
+
+// SetClock replaces the node's clock, so that windows measured in days can be
+// exercised without waiting for them.
+func (n *Node) SetClock(clock func() time.Time) {
+	n.mutex.Lock()
+	defer n.mutex.Unlock()
+	n.clock = clock
 }
 
 // Open loads or creates the node's identity and state under cfg.
@@ -84,8 +111,10 @@ func Open(ctx context.Context, cfg config.Config, logger *log.Logger) (*Node, er
 		cfg: cfg, identity: identity, database: database,
 		logs: store.NewGroupLogRepository(database), peers: store.NewPeerRepository(database),
 		policies: store.NewPolicyRepository(database), queue: store.NewProposalQueue(database),
-		server: replication.NewServer(identity), logger: logger, now: time.Now,
+		server: replication.NewServer(identity), logger: logger,
+		watches: store.NewOwnerWatchRepository(database),
 	}
+	n.server.ReceiveAttestations(n.receiveAttestation)
 	redactor := &audit.Redactor{}
 	redactor.Register(cfg.JellyfinAPIKey)
 	n.audit = &audit.Log{Sink: store.NewAuditRepository(database), Redactor: redactor}
@@ -140,10 +169,39 @@ func (n *Node) attach(ctx context.Context, groupID string, group *membership.Gro
 	group.SetAudit(n.audit)
 	inviter := enrollment.NewInviter(n.nodeID, n.identity, n.cfg.PublicAddress(), group, groupID, state, n.policies)
 	inviter.SetAudit(n.audit)
+	watch, found, err := n.watches.Load(ctx, groupID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		var ownerID string
+		_ = group.View(func(state *grouplog.State) { ownerID = state.OwnerID })
+		if watch, err = groupwatch.NewWatch(groupID, ownerID); err != nil {
+			return err
+		}
+	}
 	n.server.Add(groupID, group)
 	n.mutex.Lock()
-	n.group = &groupRuntime{id: groupID, group: group, inviter: inviter}
+	n.group = &groupRuntime{id: groupID, group: group, inviter: inviter, watch: watch, attestations: map[string]grouplog.Attestation{}}
 	n.mutex.Unlock()
+	return nil
+}
+
+// receiveAttestation keeps an attestation sent to this node as eligible
+// successor. The replication server has already verified it against the log.
+func (n *Node) receiveAttestation(groupID string, attestation grouplog.Attestation) error {
+	runtime, err := n.current()
+	if err != nil || runtime.id != groupID {
+		return ErrNoGroup
+	}
+	var successor string
+	_ = runtime.group.View(func(state *grouplog.State) { successor, _ = state.EligibleSuccessor() })
+	if successor != n.nodeID {
+		return errors.New("this node is not the eligible successor")
+	}
+	runtime.succession.Lock()
+	defer runtime.succession.Unlock()
+	runtime.attestations[attestation.AttestorID] = attestation
 	return nil
 }
 
@@ -421,6 +479,13 @@ func (n *Node) SyncOnce(ctx context.Context) (SyncResult, error) {
 		return SyncResult{}, err
 	}
 	var result SyncResult
+	var ownerFingerprint node.Fingerprint
+	_ = runtime.group.View(func(state *grouplog.State) {
+		if owner, ok := state.Member(state.OwnerID); ok {
+			ownerFingerprint = owner.Fingerprint
+		}
+	})
+	ownerReached := false
 	others := n.otherMembers(runtime)
 	for _, peer := range others {
 		synced, err := replication.Sync(ctx, n.client, peer, runtime.group, runtime.id, 0)
@@ -431,7 +496,11 @@ func (n *Node) SyncOnce(ctx context.Context) (SyncResult, error) {
 		}
 		result.Reached++
 		result.Applied += synced.Applied
+		if peer.Fingerprint == ownerFingerprint {
+			ownerReached = true
+		}
 	}
+	n.watchOwner(ctx, runtime, ownerReached)
 	n.flushProposals(ctx, runtime)
 	if err := runtime.inviter.Reconcile(ctx); err != nil {
 		n.logger.Printf("reconcile invitations: %v", err)
@@ -467,4 +536,90 @@ func (n *Node) Run(ctx context.Context, federationListener net.Listener, interva
 			}
 		}
 	}
+}
+
+// watchOwner updates this node's view of the owner's reachability after a
+// heartbeat, and acts on it: a member whose absence window has elapsed sends
+// its signed attestation to the eligible successor, and the successor claims
+// ownership once it holds a quorum of them. Nothing here changes the owner
+// directly; a claim is a log event that every member verifies.
+func (n *Node) watchOwner(ctx context.Context, runtime *groupRuntime, ownerReached bool) {
+	var ownerID, successor string
+	var epoch uint64
+	var hasAdministrators, isOwner bool
+	var members int
+	_ = runtime.group.View(func(state *grouplog.State) {
+		ownerID, epoch = state.OwnerID, state.Epoch
+		successor, hasAdministrators = state.EligibleSuccessor()
+		isOwner = state.IsOwner(n.nodeID)
+		members = len(state.Members())
+	})
+
+	runtime.succession.Lock()
+	defer runtime.succession.Unlock()
+	watch := runtime.watch
+	if watch.OwnerID != ownerID {
+		watch.OwnerChanged(ownerID)
+		runtime.attestations = map[string]grouplog.Attestation{}
+	}
+	now := n.now()
+	switch {
+	case isOwner, ownerReached:
+		_ = watch.OwnerAvailable(now)
+	default:
+		_ = watch.OwnerUnavailable(now, hasAdministrators)
+	}
+	decision := watch.Advance(now, hasAdministrators)
+	if err := n.watches.Save(ctx, watch); err != nil {
+		n.logger.Printf("save owner watch: %v", err)
+	}
+	if decision.Notify {
+		_ = n.audit.Record(ctx, "local", "group.owner_unreachable", runtime.id, map[string]string{"group_id": runtime.id, "node_id": ownerID, "status": string(watch.Status)})
+	}
+	if decision.Dissolve {
+		_ = n.audit.Record(ctx, "local", "group.dissolved", runtime.id, map[string]string{"group_id": runtime.id})
+		return
+	}
+	if !decision.ClaimEligible || isOwner {
+		return
+	}
+
+	if successor == n.nodeID {
+		var attestations []grouplog.Attestation
+		for _, attestation := range runtime.attestations {
+			if attestation.Epoch == epoch && attestation.AbsentOwnerID == ownerID {
+				attestations = append(attestations, attestation)
+			}
+		}
+		if len(attestations) < groupwatch.RequiredAbsenceAttestations(members) {
+			return
+		}
+		if _, err := runtime.group.Claim(ctx, n.identity, n.nodeID, attestations, now); err != nil {
+			n.logger.Printf("claim ownership: %v", err)
+			return
+		}
+		watch.OwnerChanged(n.nodeID)
+		runtime.attestations = map[string]grouplog.Attestation{}
+		_ = n.watches.Save(ctx, watch)
+		return
+	}
+
+	var attestation grouplog.Attestation
+	var attestErr error
+	_ = runtime.group.View(func(state *grouplog.State) {
+		attestation, attestErr = grouplog.Attest(n.identity, n.nodeID, state, watch.OwnerUnavailableSince, now)
+	})
+	if attestErr != nil {
+		n.logger.Printf("attest: %v", attestErr)
+		return
+	}
+	peer, err := n.peer(runtime, successor)
+	if err != nil {
+		return
+	}
+	if err := n.client.SendAttestation(ctx, peer, runtime.id, attestation); err != nil {
+		n.logger.Printf("send attestation to %s: %v", successor, err)
+		return
+	}
+	_ = n.audit.Record(ctx, n.nodeID, "group.absence_attested", runtime.id, map[string]string{"group_id": runtime.id, "node_id": ownerID})
 }

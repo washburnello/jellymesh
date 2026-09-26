@@ -465,7 +465,12 @@ cannot sign a second event for a slot it had already published.
 
 #### Succession and fencing
 
-Succession is a log event, and it opens a new epoch.
+Succession is a log event, and it opens a new epoch. The node daemon drives
+it from the heartbeat. Each beat that fails to reach the owner feeds the
+node's owner-absence watch. Once the window has elapsed, a member sends its
+attestation to the eligible successor at
+`POST /jellymesh/v1/groups/{group}/attestations`, and the successor claims as
+soon as it holds a quorum.
 
 1. Each attestation is **signed by its attestor**. It covers the group, the
    epoch, the absent owner, `unreachable_since`, and the attestor's own log head

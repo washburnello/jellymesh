@@ -323,3 +323,65 @@ func TestARestoredOwnerIsReleasedOnceItHasCaughtUp(t *testing.T) {
 		}
 	}
 }
+
+// C-PO-24: succession runs over the wire. With the owner gone for the full
+// window, an ordinary member sends its signed attestation to the eligible
+// successor, the successor claims once it holds a quorum, every member
+// follows the new epoch, and the former owner returns as an ordinary member.
+func TestSuccessionRunsOverTheWire(t *testing.T) {
+	cedar := startDaemon(t, "cedar", t.TempDir(), "127.0.0.1:0")
+	walnut := startDaemon(t, "walnut", t.TempDir(), "127.0.0.1:0")
+	maple := startDaemon(t, "maple", t.TempDir(), "127.0.0.1:0")
+	cedar.must(http.MethodPost, "/admin/v1/group", FoundRequest{GroupID: "group-1"}, nil)
+	join(t, cedar, walnut, cedar)
+	join(t, cedar, maple, cedar)
+	cedar.must(http.MethodPost, "/admin/v1/members/"+walnut.node.NodeID()+"/promote", nil, nil)
+	walnut.sync()
+	maple.sync()
+
+	start := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	clock := start
+	for _, d := range []*testDaemon{walnut, maple} {
+		d.node.SetClock(func() time.Time { return clock })
+	}
+	cedarDir, cedarAddress := cedar.dataDir, cedar.address
+	cedar.shutdown()
+
+	// The owner is first missed.
+	walnut.sync()
+	maple.sync()
+	// Two weeks on, the window has not elapsed: nothing may happen.
+	clock = start.Add(14 * 24 * time.Hour)
+	maple.sync()
+	walnut.sync()
+	if walnut.status().Group.OwnerID != cedar.node.NodeID() {
+		t.Fatal("succession must not happen before the window elapses")
+	}
+
+	clock = start.Add(15*24*time.Hour + time.Hour)
+	walnut.sync() // eligible, but holds no attestation yet
+	if walnut.status().Group.OwnerID != cedar.node.NodeID() {
+		t.Fatal("the successor must not claim without a quorum of attestations")
+	}
+	maple.sync()  // attests to walnut
+	walnut.sync() // claims with maple's attestation
+	walnutStatus := walnut.status()
+	if walnutStatus.Group.OwnerID != walnut.node.NodeID() || walnutStatus.Group.Epoch != 2 {
+		t.Fatalf("walnut should own epoch 2: owner %q epoch %d", walnutStatus.Group.OwnerID, walnutStatus.Group.Epoch)
+	}
+	maple.sync()
+	if maple.status().Group.OwnerID != walnut.node.NodeID() {
+		t.Fatal("maple should follow the new owner")
+	}
+
+	// The former owner comes back and follows too.
+	cedar = startDaemon(t, "cedar", cedarDir, cedarAddress)
+	cedar.sync()
+	cedarStatus := cedar.status()
+	if cedarStatus.Group.OwnerID != walnut.node.NodeID() || cedarStatus.Group.Epoch != 2 {
+		t.Fatalf("the returning owner should see the succession: owner %q epoch %d", cedarStatus.Group.OwnerID, cedarStatus.Group.Epoch)
+	}
+	if status := cedar.call(http.MethodPost, "/admin/v1/members/"+maple.node.NodeID()+"/promote", nil, &Outcome{}); status == http.StatusOK {
+		t.Fatal("the former owner may no longer promote")
+	}
+}

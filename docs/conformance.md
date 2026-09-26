@@ -153,7 +153,7 @@ behind them. They are listed so that the gap is explicit rather than implied.
 | C-OP-4 | An operator runbook documents the compromise-recovery sequence | PENDING |
 | C-OP-5 | Nodes form and operate a group through the daemon's admin API alone: founding, joining by short code, promotion, approval by an administrator that is not the owner, a proposal queued while the owner is unreachable and delivered when it returns, ejection revoking trust, and state surviving a restart; a node founds or joins at most one group | `TestAGroupFormsAndOperatesThroughTheDaemon` | PASS |
 | C-OP-6 | The admin API is served only on loopback and only to a caller holding the owner-only admin token | `TestTheAdminListenerMustBeLoopback`, `TestTheAdminAPIRequiresTheToken`, `TestTheAdminTokenIsOwnerOnly` | PASS |
-| C-PO-24 | Succession runs over the wire: members send signed absence attestations to the eligible successor, whose node claims once it holds a quorum, and each node's heartbeat keeps its owner-absence watch | none yet | PENDING — the log verifies attestations and claims (C-PO-7, C-PO-14, C-PO-15), but no endpoint carries attestations and the heartbeat does not yet drive the watch |
+| C-PO-24 | Succession runs over the wire: each heartbeat updates the node's owner-absence watch; once the window elapses, members send signed attestations to the eligible successor, whose node keeps only attestations that verify against its log and claims once it holds a quorum; every member follows the new epoch and the returning former owner can no longer act as owner | `TestSuccessionRunsOverTheWire`, `TestTheSuccessorKeepsOnlyValidAttestations` | PASS |
 
 ## 9. Recorded assumptions
 
