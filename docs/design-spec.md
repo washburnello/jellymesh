@@ -458,7 +458,10 @@ misbehaving owner, or from an owner node restored from a stale backup. A node
 that sees both stops applying events past that point, keeps both as evidence,
 and raises an operator alert. This rule has a consequence for backups: an owner
 node restored from backup must sync the log from its peers before it sequences
-anything.
+anything. `internal/backup` enforces this. A restore
+places a durable hold on sequencing and on succession claims. The hold is
+lifted only when the node confirms it has caught up, so a restored owner
+cannot sign a second event for a slot it had already published.
 
 #### Succession and fencing
 

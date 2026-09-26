@@ -30,6 +30,16 @@ type LogStore interface {
 	Save(ctx context.Context, log *grouplog.Log) error
 }
 
+// SequencingHold is implemented by a LogStore that can hold this node back
+// from sequencing; store.GroupLogRepository does. A node restored from a
+// backup may be missing events it had already published. If it sequenced
+// before catching up, it would sign a second event for a slot its peers have
+// already filled, which is equivocation, and every member would halt.
+type SequencingHold interface {
+	SequencingHeld(ctx context.Context) (bool, error)
+	ReleaseSequencing(ctx context.Context) error
+}
+
 // BlockList reports this node's local blocks; store.PeerRepository
 // satisfies it.
 type BlockList interface {
@@ -43,6 +53,10 @@ var (
 	// reloaded either. The group refuses all operations, and all trust,
 	// until it is opened again.
 	ErrGroupUnavailable = errors.New("group log is unavailable after a storage failure")
+
+	// ErrSequencingHeld means this node was restored from a backup and has
+	// not yet confirmed that it holds the latest log.
+	ErrSequencingHeld = errors.New("this node was restored and must catch up with its peers before sequencing")
 )
 
 // trustQueryTimeout bounds the block lookup inside IsTrusted, which runs on
@@ -161,6 +175,9 @@ func (group *Group) Sequence(ctx context.Context, identity *node.Identity, propo
 	if group.log == nil {
 		return grouplog.Event{}, ErrGroupUnavailable
 	}
+	if err := group.checkHold(ctx); err != nil {
+		return grouplog.Event{}, err
+	}
 	event, err := group.log.Sequence(identity, proposal, now)
 	if err != nil {
 		return grouplog.Event{}, err
@@ -181,6 +198,9 @@ func (group *Group) Claim(ctx context.Context, identity *node.Identity, claimant
 	if group.log == nil {
 		return grouplog.Event{}, ErrGroupUnavailable
 	}
+	if err := group.checkHold(ctx); err != nil {
+		return grouplog.Event{}, err
+	}
 	event, err := group.log.Claim(identity, claimantID, attestations, now)
 	if err != nil {
 		return grouplog.Event{}, err
@@ -190,6 +210,39 @@ func (group *Group) Claim(ctx context.Context, identity *node.Identity, claimant
 	}
 	group.record(ctx, "group.succession_claimed", event)
 	return event, nil
+}
+
+// checkHold refuses to sequence while a restore hold is in place. It fails
+// closed: a hold that cannot be read is treated as held.
+func (group *Group) checkHold(ctx context.Context) error {
+	hold, ok := group.store.(SequencingHold)
+	if !ok {
+		return nil
+	}
+	held, err := hold.SequencingHeld(ctx)
+	if err != nil || held {
+		return errors.Join(ErrSequencingHeld, err)
+	}
+	return nil
+}
+
+// ConfirmCaughtUp lifts a restore hold. The caller asserts that it has synced
+// with peers and that no peer holds events in this node's epoch beyond its
+// head, which replication.Sync establishes when it returns nothing to apply.
+func (group *Group) ConfirmCaughtUp(ctx context.Context) error {
+	hold, ok := group.store.(SequencingHold)
+	if !ok {
+		return nil
+	}
+	if err := hold.ReleaseSequencing(ctx); err != nil {
+		return err
+	}
+	group.mutex.RLock()
+	defer group.mutex.RUnlock()
+	if group.log != nil {
+		_ = group.audit.Record(ctx, "local", "group.sequencing_released", group.log.State().GroupID, map[string]string{"group_id": group.log.State().GroupID})
+	}
+	return nil
 }
 
 // reloadAfter replaces the in-memory log with the stored one after a failed

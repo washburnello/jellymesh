@@ -216,6 +216,17 @@ var migrations = []string{
 	ALTER TABLE invitations DROP COLUMN approval_id;
 	CREATE INDEX idx_invitations_code ON invitations(code_hash);
 	`,
+
+	// 7: node-local flags. The first is the hold a restore places on
+	// sequencing: a node restored from a backup may be missing events it had
+	// already published, and must catch up before it sequences again.
+	`
+	CREATE TABLE node_flags (
+		name   TEXT PRIMARY KEY,
+		value  TEXT NOT NULL,
+		set_at TEXT NOT NULL
+	);
+	`,
 }
 
 func (database *DB) migrate(ctx context.Context) error {

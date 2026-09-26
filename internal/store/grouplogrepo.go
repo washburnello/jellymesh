@@ -166,6 +166,40 @@ func (repo *GroupLogRepository) Save(ctx context.Context, log *grouplog.Log) err
 	})
 }
 
+const sequencingHoldFlag = "sequencing_hold"
+
+// HoldSequencing records that this node must not sequence until it has
+// confirmed it holds the latest log. Restoring from a backup sets it.
+func (repo *GroupLogRepository) HoldSequencing(ctx context.Context) error {
+	_, err := repo.database.SQL().ExecContext(ctx, `
+		INSERT INTO node_flags (name, value, set_at) VALUES (?, '1', ?)
+		ON CONFLICT(name) DO UPDATE SET value = '1', set_at = excluded.set_at`,
+		sequencingHoldFlag, FormatTime(nowUTC()))
+	if err != nil {
+		return fmt.Errorf("hold sequencing: %w", err)
+	}
+	return nil
+}
+
+// SequencingHeld reports whether the hold is in place.
+func (repo *GroupLogRepository) SequencingHeld(ctx context.Context) (bool, error) {
+	var held int
+	err := repo.database.SQL().QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM node_flags WHERE name = ? AND value = '1')`, sequencingHoldFlag).Scan(&held)
+	if err != nil {
+		return false, fmt.Errorf("read sequencing hold: %w", err)
+	}
+	return held != 0, nil
+}
+
+// ReleaseSequencing lifts the hold.
+func (repo *GroupLogRepository) ReleaseSequencing(ctx context.Context) error {
+	if _, err := repo.database.SQL().ExecContext(ctx, `DELETE FROM node_flags WHERE name = ?`, sequencingHoldFlag); err != nil {
+		return fmt.Errorf("release sequencing hold: %w", err)
+	}
+	return nil
+}
+
 // ListGroupIDs returns every group this node holds a log for, for a node
 // enumerating what it belongs to on startup.
 func (repo *GroupLogRepository) ListGroupIDs(ctx context.Context) ([]string, error) {

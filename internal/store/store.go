@@ -145,6 +145,21 @@ func (database *DB) WithTx(ctx context.Context, fn func(*sql.Tx) error) (err err
 	return nil
 }
 
+// Snapshot writes a consistent copy of the database to path, which must not
+// exist. SQLite's VACUUM INTO produces it from a single read transaction, so
+// the copy is never a mix of before and after a concurrent write. The copy is
+// made owner-only before anything else can read it.
+func (database *DB) Snapshot(ctx context.Context, path string) error {
+	if _, err := database.sql.ExecContext(ctx, `VACUUM INTO ?`, path); err != nil {
+		return fmt.Errorf("snapshot database: %w", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		os.Remove(path)
+		return fmt.Errorf("restrict snapshot permissions: %w", err)
+	}
+	return nil
+}
+
 // SchemaVersion reports the highest migration applied.
 func (database *DB) SchemaVersion(ctx context.Context) (int, error) {
 	var version sql.NullInt64
