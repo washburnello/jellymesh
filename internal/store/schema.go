@@ -227,6 +227,20 @@ var migrations = []string{
 		set_at TEXT NOT NULL
 	);
 	`,
+
+	// 8: proposals waiting for the owner. While the owner's node is
+	// unreachable, a member's signed proposals queue here and are submitted
+	// on each heartbeat until the owner sequences or refuses them
+	// (conformance.md assumption A-5).
+	`
+	CREATE TABLE pending_proposals (
+		proposal_id  TEXT PRIMARY KEY,
+		group_id     TEXT NOT NULL,
+		proposal     TEXT NOT NULL,
+		queued_at    TEXT NOT NULL
+	);
+	CREATE INDEX idx_pending_proposals_group ON pending_proposals(group_id, queued_at);
+	`,
 }
 
 func (database *DB) migrate(ctx context.Context) error {

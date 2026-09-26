@@ -111,7 +111,7 @@ findings in [plan-review.md](plan-review.md).
 | C-ST-6 | Provider health uses hysteresis; one failed request does not mark a provider offline | `TestSyncStateTransitionsFromUnknownThroughDegradedToUnavailable` | PASS |
 | C-ST-7 | Encrypted backup and restore of the node key, certificate, and all durable state: the group log, publications, opt-outs, blocks, invitations, sync state, and audit log; configuration is supplied by the deployment's environment and backed up with it | `TestBackupRestoresTheNode` | PASS |
 | C-ST-10 | A backup holds nothing in the clear; a wrong passphrase, any alteration including to the header, and a non-backup file are refused; a weak passphrase cannot make a backup; a restore never overwrites an existing node | `TestABackupHoldsNothingInTheClear`, `TestTamperingAndWrongPassphrasesAreRefused`, `TestRestoreNeverOverwritesANode` | PASS |
-| C-ST-11 | A node restored from backup may not sequence or claim until it confirms it has caught up, because a restored owner missing events it already published would otherwise equivocate | `TestARestoredOwnerMustCatchUpBeforeSequencing` | PASS |
+| C-ST-11 | A node restored from backup may not sequence or claim until it confirms it has caught up, because a restored owner missing events it already published would otherwise equivocate; the daemon releases the hold only on a heartbeat that reaches a majority of the other members with nothing newer, and a held owner's own decisions queue until then | `TestARestoredOwnerMustCatchUpBeforeSequencing`, `TestARestoredOwnerIsReleasedOnceItHasCaughtUp` | PASS |
 | C-ST-8 | Stored timestamps compare as strings in chronological order, so SQL comparisons and ordering on time columns are correct | `TestStoredTimestampsSortChronologically` | PASS |
 | C-ST-9 | The group log survives restart, is re-verified from genesis on every load so a tampered store is refused, persists a succession's truncation while keeping the removed events, and keeps a halted log halted | `TestGroupLogRepositoryRoundTrip`, `TestGroupLogRepositoryRefusesATamperedStore`, `TestGroupLogRepositoryPersistsSupersessionAndKeepsTheRemovedEvents`, `TestGroupLogRepositoryHaltSurvivesRestart` | PASS |
 
@@ -151,6 +151,9 @@ behind them. They are listed so that the gap is explicit rather than implied.
 | C-OP-2 | Compromise recovery is by re-enrollment: a fresh key is a distinct peer, and readmission requires a new invitation and fresh approval | DECIDED — see design-spec.md section 8. The mechanism it relies on is covered by C-ID-3, C-TR-4, C-TR-7 and C-PO-5; what remains is C-OP-3 and an operator runbook |
 | C-OP-3 | Ejecting a member also revokes its transport trust on every node that applies the ejection, so a compromised key cannot complete a handshake; an ejection by a non-administrator changes nothing | `TestEjectionRevokesTrustOnEveryNode`, `TestReceiversReapplyTheRoleRules` | PASS |
 | C-OP-4 | An operator runbook documents the compromise-recovery sequence | PENDING |
+| C-OP-5 | Nodes form and operate a group through the daemon's admin API alone: founding, joining by short code, promotion, approval by an administrator that is not the owner, a proposal queued while the owner is unreachable and delivered when it returns, ejection revoking trust, and state surviving a restart; a node founds or joins at most one group | `TestAGroupFormsAndOperatesThroughTheDaemon` | PASS |
+| C-OP-6 | The admin API is served only on loopback and only to a caller holding the owner-only admin token | `TestTheAdminListenerMustBeLoopback`, `TestTheAdminAPIRequiresTheToken`, `TestTheAdminTokenIsOwnerOnly` | PASS |
+| C-PO-24 | Succession runs over the wire: members send signed absence attestations to the eligible successor, whose node claims once it holds a quorum, and each node's heartbeat keeps its owner-absence watch | none yet | PENDING — the log verifies attestations and claims (C-PO-7, C-PO-14, C-PO-15), but no endpoint carries attestations and the heartbeat does not yet drive the watch |
 
 ## 9. Recorded assumptions
 
@@ -206,6 +209,18 @@ redemption rate limit within an invitation's lifetime.
 Cost: 29 characters is longer than a typical pairing code. A PAKE such as
 CPace could make it shorter, at the cost of a protocol and a dependency, and
 is the natural revisit if the length proves a problem in the pilot.
+
+**A-7. One group per node (C-OP-5).**
+Assumed: in this release a node founds or joins at most one group. The
+daemon refuses a second.
+Rationale: routing enrollment for several groups on one listener needs a
+redemption directory across groups with a shared rate limit, and blocks are
+already node-wide rather than per group. Nothing in the product decisions
+calls for a household server in two friend groups at once.
+Cost: a household that belongs to two separate circles of friends needs a
+second node. The replication layer already authorizes each request against
+the group it names, so lifting the limit later is a daemon change, not a
+protocol change.
 
 **A-5. Group state replication (C-PO-14 to C-PO-20, C-TR-9).**
 Assumed: group state (owner, epoch, administrators, the roster bound to

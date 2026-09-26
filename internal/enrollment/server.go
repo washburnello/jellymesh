@@ -324,6 +324,12 @@ func (inviter *Inviter) requests(response http.ResponseWriter, request *http.Req
 	if _, ok := inviter.administrator(response, request); !ok {
 		return
 	}
+	writeJSON(response, inviter.PendingRequests())
+}
+
+// PendingRequests returns the redeemed invitations awaiting a decision,
+// excluding any whose invitee the log has already admitted.
+func (inviter *Inviter) PendingRequests() []Request {
 	inviter.mutex.Lock()
 	defer inviter.mutex.Unlock()
 
@@ -351,7 +357,26 @@ func (inviter *Inviter) requests(response http.ResponseWriter, request *http.Req
 			PublicHostname: invitation.PublicHostname, Libraries: libraries,
 		})
 	}
-	writeJSON(response, pending)
+	return pending
+}
+
+// DenyLocally denies a request as administratorID on this node itself.
+func (inviter *Inviter) DenyLocally(ctx context.Context, administratorID string, invitationID string) error {
+	inviter.mutex.Lock()
+	defer inviter.mutex.Unlock()
+	err := inviter.withRoster(func(roster policy.Roster) error {
+		return inviter.policy.DenyInvitation(roster, administratorID, invitationID)
+	})
+	if err != nil {
+		return err
+	}
+	if err := inviter.save(ctx); err != nil {
+		return err
+	}
+	_ = inviter.audit.Record(ctx, administratorID, "invitation.denied", invitationID, map[string]string{
+		"group_id": inviter.groupID, "invitation_id": invitationID,
+	})
+	return nil
 }
 
 func (inviter *Inviter) deny(response http.ResponseWriter, request *http.Request) {

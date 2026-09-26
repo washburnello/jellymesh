@@ -157,3 +157,34 @@ func TestJellyfinURLTrailingSlashIsTrimmed(t *testing.T) {
 		t.Fatalf("trailing slash was not trimmed: %s", config.JellyfinBaseURL)
 	}
 }
+
+func TestPublicAddress(t *testing.T) {
+	cases := map[string]Config{
+		"cedar.example.org:8443": {PublicHostname: "cedar.example.org", FederationListenAddress: "0.0.0.0:8443"},
+		"cedar.example.org:443":  {PublicHostname: "cedar.example.org:443", FederationListenAddress: "0.0.0.0:8443"},
+		"":                       {FederationListenAddress: "0.0.0.0:8443"},
+	}
+	for want, cfg := range cases {
+		if got := cfg.PublicAddress(); got != want {
+			t.Errorf("PublicAddress(%+v) = %q, want %q", cfg, got, want)
+		}
+	}
+}
+
+// C-OP-6: the admin API is loopback-only.
+func TestTheAdminListenerMustBeLoopback(t *testing.T) {
+	for address, ok := range map[string]bool{
+		"127.0.0.1:8091": true, "[::1]:8091": true, "localhost:8091": true,
+		"0.0.0.0:8091": false, "192.168.1.10:8091": false, ":8091": false,
+	} {
+		_, err := FromLookup(func(key string) (string, bool) {
+			if key == "JELLYMESH_ADMIN_LISTEN_ADDR" {
+				return address, true
+			}
+			return "", false
+		})
+		if (err == nil) != ok {
+			t.Errorf("admin address %q: error = %v, want accepted=%v", address, err, ok)
+		}
+	}
+}

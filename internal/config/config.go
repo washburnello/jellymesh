@@ -74,6 +74,13 @@ func FromLookup(lookup func(string) (string, bool)) (Config, error) {
 	if cfg.FederationListenAddress == cfg.AdminListenAddress {
 		return Config{}, fmt.Errorf("the federation and admin listeners must not share an address")
 	}
+	// The admin API administers the node. It is served only on loopback, and
+	// reached with the CLI on the same host (inside the container, in a
+	// container deployment); the bearer token is a second barrier, not the
+	// only one.
+	if !isLoopback(cfg.AdminListenAddress) {
+		return Config{}, fmt.Errorf("JELLYMESH_ADMIN_LISTEN_ADDR must be a loopback address, not %q", cfg.AdminListenAddress)
+	}
 
 	cfg.NodeName = strings.TrimSpace(valueOrDefault(lookup, "JELLYMESH_NODE_NAME", "Jellymesh Node"))
 	if cfg.NodeName == "" {
@@ -140,4 +147,30 @@ func valueOrDefault(lookup func(string) (string, bool), key string, fallback str
 		return strings.TrimSpace(value)
 	}
 	return fallback
+}
+
+// PublicAddress is the host and port peers dial. PublicHostname may carry a
+// port, for a node behind a port forward that differs from its listener;
+// otherwise the federation listener's port is used.
+func (cfg Config) PublicAddress() string {
+	if _, _, err := net.SplitHostPort(cfg.PublicHostname); err == nil {
+		return cfg.PublicHostname
+	}
+	_, port, err := net.SplitHostPort(cfg.FederationListenAddress)
+	if err != nil || cfg.PublicHostname == "" {
+		return cfg.PublicHostname
+	}
+	return net.JoinHostPort(cfg.PublicHostname, port)
+}
+
+func isLoopback(address string) bool {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

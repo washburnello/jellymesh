@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -166,7 +168,38 @@ func (repo *GroupLogRepository) Save(ctx context.Context, log *grouplog.Log) err
 	})
 }
 
-const sequencingHoldFlag = "sequencing_hold"
+const (
+	sequencingHoldFlag = "sequencing_hold"
+	nodeIDFlag         = "node_id"
+)
+
+// NodeID returns this node's stable random identifier, creating it on first
+// use. It never changes afterwards; a node with a new key is re-enrolled as a
+// new node, with a new database and so a new ID.
+func (repo *GroupLogRepository) NodeID(ctx context.Context) (string, error) {
+	var id string
+	err := repo.database.SQL().QueryRowContext(ctx, `SELECT value FROM node_flags WHERE name = ?`, nodeIDFlag).Scan(&id)
+	if err == nil {
+		return id, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("read node id: %w", err)
+	}
+	random := make([]byte, 16)
+	if _, err := rand.Read(random); err != nil {
+		return "", err
+	}
+	id = hex.EncodeToString(random)
+	if _, err := repo.database.SQL().ExecContext(ctx,
+		`INSERT OR IGNORE INTO node_flags (name, value, set_at) VALUES (?, ?, ?)`, nodeIDFlag, id, FormatTime(nowUTC())); err != nil {
+		return "", fmt.Errorf("store node id: %w", err)
+	}
+	// Another writer may have won the insert; read back whatever is stored.
+	if err := repo.database.SQL().QueryRowContext(ctx, `SELECT value FROM node_flags WHERE name = ?`, nodeIDFlag).Scan(&id); err != nil {
+		return "", fmt.Errorf("read node id: %w", err)
+	}
+	return id, nil
+}
 
 // HoldSequencing records that this node must not sequence until it has
 // confirmed it holds the latest log. Restoring from a backup sets it.

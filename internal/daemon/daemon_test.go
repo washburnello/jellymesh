@@ -1,0 +1,325 @@
+package daemon
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"jellymesh/internal/backup"
+	"jellymesh/internal/config"
+	"jellymesh/internal/enrollment"
+	"jellymesh/internal/policy"
+)
+
+type testDaemon struct {
+	t       *testing.T
+	name    string
+	dataDir string
+	address string
+	node    *Node
+	admin   *httptest.Server
+	token   string
+	stop    context.CancelFunc
+	done    chan error
+}
+
+func startDaemon(t *testing.T, name string, dataDir string, address string) *testDaemon {
+	t.Helper()
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		t.Fatalf("listen %s: %v", name, err)
+	}
+	d := &testDaemon{t: t, name: name, dataDir: dataDir, address: listener.Addr().String()}
+	cfg := config.Config{
+		NodeName:                name,
+		PublicHostname:          d.address,
+		FederationListenAddress: d.address,
+		DataDirectory:           dataDir,
+		NodeKeyPath:             filepath.Join(dataDir, "node.key"),
+		NodeCertPath:            filepath.Join(dataDir, "node.crt"),
+		JellyfinAPIKey:          "jellyfin-api-key-for-" + name,
+	}
+	if d.node, err = Open(context.Background(), cfg, log.New(io.Discard, "", 0)); err != nil {
+		t.Fatalf("open %s: %v", name, err)
+	}
+	if d.token, err = LoadOrCreateAdminToken(filepath.Join(dataDir, AdminTokenName)); err != nil {
+		t.Fatalf("token: %v", err)
+	}
+	d.admin = httptest.NewServer(d.node.AdminHandler(d.token))
+	ctx, cancel := context.WithCancel(context.Background())
+	d.stop, d.done = cancel, make(chan error, 1)
+	go func() { d.done <- d.node.Run(ctx, listener, time.Hour) }()
+	t.Cleanup(d.shutdown)
+	return d
+}
+
+func (d *testDaemon) shutdown() {
+	if d.stop == nil {
+		return
+	}
+	d.stop()
+	<-d.done
+	d.admin.Close()
+	d.node.Close()
+	d.stop = nil
+}
+
+func (d *testDaemon) call(method string, path string, body any, into any) int {
+	d.t.Helper()
+	var reader io.Reader
+	if body != nil {
+		encoded, _ := json.Marshal(body)
+		reader = bytes.NewReader(encoded)
+	}
+	request, _ := http.NewRequest(method, d.admin.URL+path, reader)
+	request.Header.Set("Authorization", "Bearer "+d.token)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		d.t.Fatalf("%s %s: %v", method, path, err)
+	}
+	defer response.Body.Close()
+	data, _ := io.ReadAll(response.Body)
+	if into != nil && response.StatusCode == http.StatusOK {
+		if err := json.Unmarshal(data, into); err != nil {
+			d.t.Fatalf("decode %s: %v: %s", path, err, data)
+		}
+	}
+	if response.StatusCode != http.StatusOK && into != nil {
+		d.t.Logf("%s %s: %d %s", method, path, response.StatusCode, data)
+	}
+	return response.StatusCode
+}
+
+func (d *testDaemon) must(method string, path string, body any, into any) {
+	d.t.Helper()
+	if status := d.call(method, path, body, into); status != http.StatusOK {
+		d.t.Fatalf("%s %s on %s: status %d", method, path, d.name, status)
+	}
+}
+
+func (d *testDaemon) status() Status {
+	var status Status
+	d.must(http.MethodGet, "/admin/v1/status", nil, &status)
+	return status
+}
+
+func (d *testDaemon) sync() SyncResult {
+	var result SyncResult
+	d.must(http.MethodPost, "/admin/v1/sync", nil, &result)
+	return result
+}
+
+// join takes a node from invitation to membership through the admin API: the
+// inviter invites, the joiner redeems, approver approves, the joiner joins.
+func join(t *testing.T, inviter *testDaemon, joiner *testDaemon, approver *testDaemon) {
+	t.Helper()
+	var invitation InviteResponse
+	inviter.must(http.MethodPost, "/admin/v1/invitations", InviteRequest{ValidForSeconds: 3600}, &invitation)
+	var pending PendingJoin
+	joiner.must(http.MethodPost, "/admin/v1/join/redeem", RedeemAdminRequest{
+		ShortCode: invitation.ShortCode, Address: invitation.Address,
+		Libraries: []policy.Library{{ID: joiner.name + "-movies", Name: "Movies", CollectionType: "movies"}},
+	}, &pending)
+	var waiting PendingJoin
+	joiner.must(http.MethodPost, "/admin/v1/join/complete", pending, &waiting)
+	if waiting.Status != string(policy.InvitationAwaitingApproval) {
+		t.Fatalf("%s before approval: %q", joiner.name, waiting.Status)
+	}
+
+	var requests []enrollment.Request
+	approver.must(http.MethodGet, "/admin/v1/requests", nil, &requests)
+	if len(requests) != 1 {
+		t.Fatalf("%s sees %d requests, want 1", approver.name, len(requests))
+	}
+	var outcome Outcome
+	approver.must(http.MethodPost, "/admin/v1/requests/approve", DecisionRequest{
+		InviterID: requests[0].InviterID, InvitationID: requests[0].InvitationID,
+	}, &outcome)
+	if !outcome.Sequenced {
+		t.Fatalf("approval by %s was not sequenced: %+v", approver.name, outcome)
+	}
+	inviter.sync()
+
+	var joined PendingJoin
+	joiner.must(http.MethodPost, "/admin/v1/join/complete", pending, &joined)
+	if joined.Status != string(policy.InvitationAdmitted) {
+		t.Fatalf("%s after approval: %q", joiner.name, joined.Status)
+	}
+}
+
+// C-OP-5: three nodes form a group through their admin APIs alone: founding,
+// joining by short code, promotion, approval by an administrator that is not
+// the owner, a proposal queued while the owner is down and delivered when it
+// returns, and state that survives a restart.
+func TestAGroupFormsAndOperatesThroughTheDaemon(t *testing.T) {
+	cedar := startDaemon(t, "cedar", t.TempDir(), "127.0.0.1:0")
+	walnut := startDaemon(t, "walnut", t.TempDir(), "127.0.0.1:0")
+	juniper := startDaemon(t, "juniper", t.TempDir(), "127.0.0.1:0")
+
+	cedar.must(http.MethodPost, "/admin/v1/group", FoundRequest{GroupID: "group-1"}, nil)
+	if status := cedar.call(http.MethodPost, "/admin/v1/group", FoundRequest{GroupID: "group-2"}, nil); status != http.StatusConflict {
+		t.Fatalf("founding a second group: status %d, want 409 (assumption A-7)", status)
+	}
+
+	join(t, cedar, walnut, cedar)
+	cedar.must(http.MethodPost, "/admin/v1/members/"+walnut.node.NodeID()+"/promote", nil, nil)
+	walnut.sync()
+	if walnutStatus := walnut.status(); walnutStatus.Group == nil || len(walnutStatus.Group.Members) != 2 {
+		t.Fatalf("walnut's view: %+v", walnutStatus.Group)
+	}
+
+	// walnut, an administrator but not the owner, approves juniper.
+	join(t, cedar, juniper, walnut)
+	walnut.sync()
+	if cedar.status().Group.Sequence != walnut.status().Group.Sequence || juniper.status().Group.Sequence != cedar.status().Group.Sequence {
+		t.Fatal("all three nodes should hold the same log")
+	}
+
+	// The owner goes down. walnut's ejection of juniper queues.
+	cedarDir, cedarAddress := cedar.dataDir, cedar.address
+	cedar.shutdown()
+	var queued Outcome
+	walnut.must(http.MethodPost, "/admin/v1/members/"+juniper.node.NodeID()+"/eject", nil, &queued)
+	if !queued.Queued || walnut.status().Group.Queued != 1 {
+		t.Fatalf("with the owner down the ejection should queue: %+v", queued)
+	}
+
+	// The owner returns at its address, from its own disk, and the queue
+	// drains on walnut's next heartbeat.
+	cedar = startDaemon(t, "cedar", cedarDir, cedarAddress)
+	walnut.sync()
+	if walnut.status().Group.Queued != 0 {
+		t.Fatal("the queued ejection should have been delivered")
+	}
+	cedarStatus := cedar.status()
+	for _, member := range cedarStatus.Group.Members {
+		if member.NodeID == juniper.node.NodeID() {
+			t.Fatal("the owner should have sequenced the ejection")
+		}
+	}
+	if cedar.node.server.IsTrusted(juniper.node.Identity().Fingerprint()) {
+		t.Fatal("the ejected node must lose transport trust")
+	}
+}
+
+// The admin API refuses requests without the token.
+func TestTheAdminAPIRequiresTheToken(t *testing.T) {
+	cedar := startDaemon(t, "cedar", t.TempDir(), "127.0.0.1:0")
+	response, err := http.Get(cedar.admin.URL + "/admin/v1/status")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status %d without a token, want 401", response.StatusCode)
+	}
+	cedar.token = "wrong"
+	if status := cedar.call(http.MethodGet, "/admin/v1/status", nil, nil); status != http.StatusUnauthorized {
+		t.Fatalf("status %d with a wrong token, want 401", status)
+	}
+	health, err := http.Get(cedar.admin.URL + "/healthz")
+	if err != nil || health.StatusCode != http.StatusOK {
+		t.Fatalf("health check: %v, %v", health, err)
+	}
+	health.Body.Close()
+}
+
+func TestTheAdminTokenIsOwnerOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), AdminTokenName)
+	first, err := LoadOrCreateAdminToken(path)
+	if err != nil || len(first) != 64 {
+		t.Fatalf("create: %q, %v", first, err)
+	}
+	if second, _ := LoadOrCreateAdminToken(path); second != first {
+		t.Fatal("the token must persist")
+	}
+	if err := chmod(path, 0o644); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	if _, err := LoadOrCreateAdminToken(path); err == nil {
+		t.Fatal("a readable token file must be refused")
+	}
+}
+
+func chmod(path string, mode os.FileMode) error { return os.Chmod(path, mode) }
+
+// C-ST-11 end to end: an owner restored from an older backup is held back from
+// sequencing, catches up on its first heartbeat, and is released on the next,
+// once a majority of the other members have nothing newer to offer.
+func TestARestoredOwnerIsReleasedOnceItHasCaughtUp(t *testing.T) {
+	cedar := startDaemon(t, "cedar", t.TempDir(), "127.0.0.1:0")
+	walnut := startDaemon(t, "walnut", t.TempDir(), "127.0.0.1:0")
+	cedar.must(http.MethodPost, "/admin/v1/group", FoundRequest{GroupID: "group-1"}, nil)
+	join(t, cedar, walnut, cedar)
+
+	var archive bytes.Buffer
+	paths := backup.Paths{
+		Database: filepath.Join(cedar.dataDir, DatabaseName),
+		Key:      filepath.Join(cedar.dataDir, "node.key"),
+		Cert:     filepath.Join(cedar.dataDir, "node.crt"),
+	}
+	if err := backup.Create(context.Background(), cedar.node.database, cedar.node.identity, paths, "a long backup passphrase", &archive); err != nil {
+		t.Fatalf("backup: %v", err)
+	}
+	// After the backup the owner publishes one more event, which walnut holds.
+	cedar.must(http.MethodPost, "/admin/v1/members/"+walnut.node.NodeID()+"/promote", nil, nil)
+	walnut.sync()
+	address := cedar.address
+	cedar.shutdown()
+
+	restoredDir := t.TempDir()
+	restored := backup.Paths{
+		Database: filepath.Join(restoredDir, DatabaseName),
+		Key:      filepath.Join(restoredDir, "node.key"),
+		Cert:     filepath.Join(restoredDir, "node.crt"),
+	}
+	if _, err := backup.Restore(context.Background(), "a long backup passphrase", &archive, restored, "cedar"); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	cedar = startDaemon(t, "cedar", restoredDir, address)
+	if !cedar.status().Group.Held {
+		t.Fatal("a restored node starts held")
+	}
+	// A held owner's own decision queues rather than being sequenced.
+	var outcome Outcome
+	cedar.must(http.MethodPost, "/admin/v1/members/"+walnut.node.NodeID()+"/demote", nil, &outcome)
+	if outcome.Sequenced || !outcome.Queued {
+		t.Fatalf("a held node must queue, not sequence: %+v", outcome)
+	}
+
+	if result := cedar.sync(); result.Applied == 0 {
+		t.Fatal("the first heartbeat should fetch the event the backup lacked")
+	}
+	if !cedar.status().Group.Held {
+		t.Fatal("a heartbeat that found newer events must not release the hold")
+	}
+	cedar.sync()
+	if cedar.status().Group.Held {
+		t.Fatal("a heartbeat with nothing newer from a majority should release the hold")
+	}
+
+	// The next heartbeat delivers the queued demotion, now built on the
+	// complete log, and walnut accepts it: no equivocation.
+	cedar.sync()
+	if cedar.status().Group.Queued != 0 {
+		t.Fatal("the queued decision should be sequenced once released")
+	}
+	walnut.sync()
+	if cedar.status().Group.Sequence != walnut.status().Group.Sequence {
+		t.Fatal("after release the two nodes should agree")
+	}
+	for _, member := range walnut.status().Group.Members {
+		if member.NodeID == walnut.node.NodeID() && member.Administrator {
+			t.Fatal("the demotion should have applied")
+		}
+	}
+}
