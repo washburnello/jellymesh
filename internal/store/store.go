@@ -35,7 +35,6 @@ const TimeFormat = "2006-01-02T15:04:05.000000000Z07:00"
 
 var (
 	ErrPathRequired = errors.New("a database path is required")
-	ErrMigrationGap = errors.New("migrations must be numbered consecutively from 1")
 	ErrSchemaTooNew = errors.New("the database schema is newer than this build understands")
 )
 
@@ -71,12 +70,11 @@ func Open(path string) (*DB, error) {
 	// read concurrency costs nothing measurable, and the failure mode it
 	// removes is the kind that only appears under load in production.
 	//
-	// This is load-bearing beyond performance. PeerRepository.Upsert detects a
-	// fingerprint collision with a read followed by a write, which is only
-	// race-free because no second connection can interleave between them. Two
-	// nodes sharing a fingerprint would mean one can impersonate the other, so
-	// raising this limit requires replacing that check with a constraint-based
-	// guard first.
+	// PeerRepository.Upsert checks for a fingerprint collision with a read
+	// before its write so it can return a descriptive ErrFingerprintInUse. The
+	// UNIQUE constraint on peers.fingerprint is what actually guarantees two
+	// nodes never share a key, so a second connection racing between the read
+	// and the write would surface as a constraint error, not as a duplicate.
 	handle.SetMaxOpenConns(1)
 	handle.SetMaxIdleConns(1)
 	handle.SetConnMaxLifetime(0)

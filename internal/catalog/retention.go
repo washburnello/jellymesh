@@ -9,10 +9,10 @@ import (
 const DefaultDeletionGracePeriod = 7 * 24 * time.Hour
 
 var (
-	ErrSourceNodeIDRequired = errors.New("source node ID is required")
+	ErrSourceNodeIDRequired    = errors.New("source node ID is required")
 	ErrSourceLibraryIDRequired = errors.New("source library ID is required")
-	ErrSourceItemIDRequired = errors.New("source item ID is required")
-	ErrInvalidRetentionPolicy = errors.New("retention grace period must be positive")
+	ErrSourceItemIDRequired    = errors.New("source item ID is required")
+	ErrInvalidRetentionPolicy  = errors.New("retention grace period must be positive")
 )
 
 type RetentionPolicy struct {
@@ -20,12 +20,12 @@ type RetentionPolicy struct {
 }
 
 type RetentionRecord struct {
-	SourceNodeID  string
+	SourceNodeID    string
 	SourceLibraryID string
-	SourceItemID  string
-	LogicalWorkID string
-	DeletedAt     time.Time
-	ExpiresAt     time.Time
+	SourceItemID    string
+	LogicalWorkID   string
+	DeletedAt       time.Time
+	ExpiresAt       time.Time
 }
 
 type RetentionStore struct {

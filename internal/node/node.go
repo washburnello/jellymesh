@@ -169,9 +169,6 @@ func (identity *Identity) PublicKey() ed25519.PublicKey {
 	return identity.privateKey.Public().(ed25519.PublicKey)
 }
 
-// TLSCertificate returns the certificate in the form crypto/tls expects for
-// both tls.Config.Certificates (serving) and tls.Config.GetClientCertificate
-// (dialing), since this node presents the same certificate in either role.
 // Signer exposes the node's private key as a crypto.Signer so that other
 // packages can sign group events without reaching through the TLS certificate
 // to find the key. The TLS certificate is documented for use by crypto/tls;
@@ -183,11 +180,14 @@ func (identity *Identity) Signer() crypto.Signer {
 
 // Sign produces an Ed25519 signature over message using the node's long-term
 // identity key. Ed25519 signs the message itself rather than a pre-computed
-// digest, so opts is always nil here.
+// digest.
 func (identity *Identity) Sign(message []byte) []byte {
 	return ed25519.Sign(identity.privateKey, message)
 }
 
+// TLSCertificate returns the certificate in the form crypto/tls expects for
+// both tls.Config.Certificates (serving) and tls.Config.GetClientCertificate
+// (dialing), since this node presents the same certificate in either role.
 func (identity *Identity) TLSCertificate() tls.Certificate {
 	return identity.tlsCertificate
 }

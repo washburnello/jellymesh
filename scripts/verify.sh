@@ -35,10 +35,12 @@ done < <(grep -E '^\| *C-[A-Z]+-[0-9]+ *\|' "$DOC")
 echo "== running ${#to_run[@]} criterion-bound tests =="
 if [ ${#to_run[@]} -gt 0 ]; then
   pattern="^($(printf '%s|' "${to_run[@]}" | sed 's/|$//'))\$"
-  if go test ./... -run "$pattern" -count=1 >/tmp/jm_verify.log 2>&1; then
+  log=$(mktemp)
+  trap 'rm -f "$log"' EXIT
+  if go test ./... -run "$pattern" -count=1 >"$log" 2>&1; then
     echo "  all criterion-bound tests pass"
   else
-    echo "  FAILURES:"; grep -E '^(---|\s+)' /tmp/jm_verify.log | head -20; exit 1
+    echo "  FAILURES:"; grep -E '^(---|\s+)' "$log" | head -20; exit 1
   fi
 fi
 
@@ -48,7 +50,7 @@ if go test ./... -count=1 >/dev/null 2>&1; then echo "  all tests pass"; else ec
 echo
 echo "== conformance summary =="
 total=0
-for s in PASS PARTIAL PENDING MANUAL ASSUMED; do
+for s in PASS PARTIAL PENDING MANUAL ASSUMED DECIDED; do
   n=$(grep -cE "^\|.*\| *$s( —.*)? *\|? *$" "$DOC" || true)
   total=$((total+n))
   printf '  %-8s %3d\n' "$s" "$n"

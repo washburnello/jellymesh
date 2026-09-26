@@ -29,6 +29,7 @@ findings in [plan-review.md](plan-review.md).
 | `PENDING` | Accepted requirement, not yet implemented. |
 | `MANUAL` | Cannot be proven by unit test; needs a lab or pilot procedure. |
 | `ASSUMED` | An open product decision resolved by a documented assumption in section 9, to be ratified or overridden. |
+| `DECIDED` | A product decision recorded in the design specification. What it depends on is tracked by the criteria named in its notes. |
 
 ## 3. Node identity and transport
 
@@ -126,7 +127,7 @@ behind them. They are listed so that the gap is explicit rather than implied.
 | C-PB-2 | An unavailable source fails playback cleanly without destructive catalog pruning | PENDING |
 | C-PB-3 | A source enforces a bandwidth ceiling per destination | PENDING — see assumption A-1 |
 | C-OP-1 | Audit events are recorded with secrets redacted | PENDING — the table exists, nothing writes to it |
-| C-OP-2 | Compromise recovery is by re-enrollment: a fresh key is a distinct peer, and readmission requires a new invitation and fresh approval | DECIDED — see design-spec.md section 8. The mechanism it relies on is covered by C-ID-3, C-TR-4 and C-PO-5; what remains is C-OP-3 and an operator runbook |
+| C-OP-2 | Compromise recovery is by re-enrollment: a fresh key is a distinct peer, and readmission requires a new invitation and fresh approval | DECIDED — see design-spec.md section 8. The mechanism it relies on is covered by C-ID-3, C-TR-4, C-TR-7 and C-PO-5; what remains is C-OP-3 and an operator runbook |
 | C-OP-3 | Ejecting or revoking a member also revokes trust at the transport layer, so a compromised key cannot complete a handshake | `TestEjectionRevokesTransportTrust`, `TestEjectionByANonAdministratorChangesNothing`, `TestAdministratorMayIssueMembershipEvents` | PASS |
 | C-OP-4 | An operator runbook documents the compromise-recovery sequence | PENDING |
 

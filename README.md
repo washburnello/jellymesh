@@ -10,7 +10,7 @@ Jellymesh is a planned federation layer for independent Jellyfin servers. Each h
 - Walnut has Docker and Docker Compose available but no Jellyfin deployment.
 - No production server, account, library, or media has been modified.
 - Phase 0 lab scaffolding is present under `lab/`.
-- A dependency-free Go Jellymesh Service skeleton is present under `cmd/jellymesh/` and `internal/`.
+- A Go Jellymesh Service skeleton is present under `cmd/jellymesh/` and `internal/`. Its only dependency is the pure-Go SQLite driver `modernc.org/sqlite`.
 - The policy core models opt-in group publication, automatic destination availability, explicit per-library opt-out, and symmetric peer blocks under `internal/policy/`.
 - The history ledger model under `internal/history/` preserves per-user watched state, play counts, and resume positions across generated-content cleanup.
 - The retention store under `internal/catalog/` keeps deletion metadata/artwork identity available for a configurable grace period, defaulting to 7 days.

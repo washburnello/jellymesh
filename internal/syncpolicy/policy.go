@@ -6,27 +6,27 @@ import (
 )
 
 const (
-	DefaultHealthInterval        = 5 * time.Minute
-	DefaultCatalogInterval       = time.Hour
+	DefaultHealthInterval          = 5 * time.Minute
+	DefaultCatalogInterval         = time.Hour
 	DefaultOfflineCatalogRetention = 15 * 24 * time.Hour
-	DefaultMaximumBackoff        = time.Hour
-	DefaultCatalogPageLimit      = 5000
+	DefaultMaximumBackoff          = time.Hour
+	DefaultCatalogPageLimit        = 5000
 )
 
 var (
 	ErrInvalidHealthInterval          = errors.New("health interval must be positive")
 	ErrInvalidCatalogInterval         = errors.New("catalog interval must be positive")
 	ErrInvalidOfflineCatalogRetention = errors.New("offline catalog retention must be positive")
-	ErrInvalidBackoff                  = errors.New("maximum backoff must be positive")
-	ErrInvalidPageLimit                = errors.New("catalog page limit must be positive")
+	ErrInvalidBackoff                 = errors.New("maximum backoff must be positive")
+	ErrInvalidPageLimit               = errors.New("catalog page limit must be positive")
 )
 
 type Policy struct {
-	HealthInterval         time.Duration
-	CatalogInterval        time.Duration
+	HealthInterval          time.Duration
+	CatalogInterval         time.Duration
 	OfflineCatalogRetention time.Duration
-	MaximumBackoff         time.Duration
-	CatalogPageLimit       int
+	MaximumBackoff          time.Duration
+	CatalogPageLimit        int
 }
 
 func DefaultPolicy() Policy {

@@ -18,7 +18,7 @@ func TestRetentionStoreUsesSevenDayDefault(t *testing.T) {
 	if record.ExpiresAt != deletedAt.Add(7*24*time.Hour) {
 		t.Fatalf("unexpected expiration: %s", record.ExpiresAt)
 	}
-	if store.Expire(deletedAt.Add(7*24*time.Hour - time.Second)) != 0 {
+	if store.Expire(deletedAt.Add(7*24*time.Hour-time.Second)) != 0 {
 		t.Fatal("record expired before grace period")
 	}
 	if store.Expire(record.ExpiresAt) != 1 {

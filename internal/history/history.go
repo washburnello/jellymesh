@@ -7,23 +7,23 @@ import (
 )
 
 var (
-	ErrUserIDRequired        = errors.New("user ID is required")
-	ErrWorkIDRequired        = errors.New("logical work ID is required")
-	ErrInvalidPosition       = errors.New("resume position must not be negative")
-	ErrInvalidPlayCount      = errors.New("play count must not be negative")
+	ErrUserIDRequired          = errors.New("user ID is required")
+	ErrWorkIDRequired          = errors.New("logical work ID is required")
+	ErrInvalidPosition         = errors.New("resume position must not be negative")
+	ErrInvalidPlayCount        = errors.New("play count must not be negative")
 	ErrHistoryIdentityMismatch = errors.New("history entries refer to different users or works")
 )
 
 type Entry struct {
-	UserID            string
-	WorkID            string
-	MediaType         string
-	ProviderIdentity  string
-	Played            bool
-	PlayCount         int
+	UserID              string
+	WorkID              string
+	MediaType           string
+	ProviderIdentity    string
+	Played              bool
+	PlayCount           int
 	ResumePositionTicks int64
-	LastPlayedAt      time.Time
-	UpdatedAt         time.Time
+	LastPlayedAt        time.Time
+	UpdatedAt           time.Time
 }
 
 type Ledger struct {

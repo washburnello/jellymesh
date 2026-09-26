@@ -8,7 +8,7 @@ import (
 
 var (
 	ErrInvalidPublishedLibrary = errors.New("published library ID cannot be empty")
-	ErrInvalidSourceOptOut      = errors.New("source opt-out requires server and library IDs")
+	ErrInvalidSourceOptOut     = errors.New("source opt-out requires server and library IDs")
 )
 
 type SourceLibrary struct {
@@ -17,11 +17,11 @@ type SourceLibrary struct {
 }
 
 type Settings struct {
-	PublishedLibraryIDs          []string
-	SourceOptOuts                map[SourceLibrary]bool
-	RemoteTranscodeLimit         int
-	RemoteTranscodeOverrideSet   bool
-	ShowSyncHealth               bool
+	PublishedLibraryIDs        []string
+	SourceOptOuts              map[SourceLibrary]bool
+	RemoteTranscodeLimit       int
+	RemoteTranscodeOverrideSet bool
+	ShowSyncHealth             bool
 }
 
 func Default() Settings {
