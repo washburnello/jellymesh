@@ -1,6 +1,7 @@
 package replication
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -34,6 +35,14 @@ var (
 	// ErrNotServed means the peer answered but does not serve the group to
 	// this node.
 	ErrNotServed = errors.New("the peer does not serve this group to this node")
+
+	// ErrNotOwner means the peer is not the group's owner and cannot
+	// sequence a proposal.
+	ErrNotOwner = errors.New("the peer is not the group owner")
+
+	// ErrProposalRefused means the owner applied the group's rules to the
+	// proposal and refused it.
+	ErrProposalRefused = errors.New("the owner refused the proposal")
 )
 
 // maxResponseBytes bounds how much of a response is read, so a hostile peer
@@ -99,22 +108,51 @@ func (client *Client) Events(ctx context.Context, peer Peer, groupID string, aft
 	return events, err
 }
 
+// Submit sends a signed proposal to the group owner's node and returns the
+// event it was sequenced as.
+func (client *Client) Submit(ctx context.Context, owner Peer, groupID string, proposal grouplog.Proposal) (grouplog.Event, error) {
+	body, err := json.Marshal(proposal)
+	if err != nil {
+		return grouplog.Event{}, err
+	}
+	var event grouplog.Event
+	err = client.do(ctx, owner, http.MethodPost, "/jellymesh/v1/groups/"+url.PathEscape(groupID)+"/proposals", body, &event)
+	return event, err
+}
+
 func (client *Client) get(ctx context.Context, peer Peer, path string, into any) error {
+	return client.do(ctx, peer, http.MethodGet, path, nil, into)
+}
+
+func (client *Client) do(ctx context.Context, peer Peer, method string, path string, body []byte, into any) error {
 	ctx, cancel := context.WithTimeout(ctx, client.timeout)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+peer.Address+path, nil)
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	request, err := http.NewRequestWithContext(ctx, method, "https://"+peer.Address+path, reader)
 	if err != nil {
 		return err
+	}
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
 	}
 	response, err := (&http.Client{Transport: client.transportFor(peer)}).Do(request)
 	if err != nil {
 		return classify(err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode == http.StatusNotFound {
+	switch response.StatusCode {
+	case http.StatusOK:
+	case http.StatusNotFound:
 		return ErrNotServed
-	}
-	if response.StatusCode != http.StatusOK {
+	case http.StatusConflict:
+		return ErrNotOwner
+	case http.StatusUnprocessableEntity:
+		reason, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
+		return fmt.Errorf("%w: %s", ErrProposalRefused, strings.TrimSpace(string(reason)))
+	default:
 		return fmt.Errorf("peer answered %s", response.Status)
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, maxResponseBytes)).Decode(into); err != nil {

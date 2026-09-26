@@ -10,12 +10,16 @@ package replication
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"sync"
+	"time"
 
 	"jellymesh/internal/grouplog"
 	"jellymesh/internal/membership"
+	"jellymesh/internal/node"
 	"jellymesh/internal/transport"
 )
 
@@ -24,18 +28,28 @@ const (
 	// make a node serialize an unbounded log.
 	MaxPageSize = 256
 
-	headPath   = "/jellymesh/v1/groups/{group}/log/head"
-	eventsPath = "/jellymesh/v1/groups/{group}/log/events"
+	headPath      = "/jellymesh/v1/groups/{group}/log/head"
+	eventsPath    = "/jellymesh/v1/groups/{group}/log/events"
+	proposalsPath = "/jellymesh/v1/groups/{group}/proposals"
+
+	// maxProposalBytes bounds a submitted proposal; the largest, an
+	// admission, is well under a kilobyte.
+	maxProposalBytes = 64 << 10
 )
 
-// Server serves this node's group logs to their members.
+// Server serves this node's group logs to their members and, when this node
+// is a group's owner, sequences the proposals members submit.
 type Server struct {
-	mutex  sync.RWMutex
-	groups map[string]*membership.Group
+	mutex    sync.RWMutex
+	groups   map[string]*membership.Group
+	identity *node.Identity
+	now      func() time.Time
 }
 
-func NewServer() *Server {
-	return &Server{groups: make(map[string]*membership.Group)}
+// NewServer returns a server that signs as identity when it sequences a
+// submitted proposal. identity may be nil for a node that only serves logs.
+func NewServer(identity *node.Identity) *Server {
+	return &Server{groups: make(map[string]*membership.Group), identity: identity, now: time.Now}
 }
 
 // Add serves group under groupID.
@@ -72,6 +86,7 @@ func (server *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+headPath, server.head)
 	mux.HandleFunc("GET "+eventsPath, server.events)
+	mux.HandleFunc("POST "+proposalsPath, server.propose)
 	return mux
 }
 
@@ -136,4 +151,38 @@ func (server *Server) events(response http.ResponseWriter, request *http.Request
 func writeJSON(response http.ResponseWriter, value any) {
 	response.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(response).Encode(value)
+}
+
+// propose sequences a proposal submitted by a member. Only the owner's node
+// can do this; any other node answers 409 so the submitter can find the
+// owner. The proposal's own signature, not the submitting connection, is what
+// authorizes it, so a member may relay another member's proposal, and the
+// log applies the same role rules it applies to every event.
+func (server *Server) propose(response http.ResponseWriter, request *http.Request) {
+	group, ok := server.authorize(response, request)
+	if !ok {
+		return
+	}
+	var proposal grouplog.Proposal
+	decoder := json.NewDecoder(io.LimitReader(request.Body, maxProposalBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&proposal); err != nil {
+		http.Error(response, "malformed proposal", http.StatusBadRequest)
+		return
+	}
+	if server.identity == nil {
+		http.Error(response, "this node does not sequence", http.StatusConflict)
+		return
+	}
+	event, err := group.Sequence(request.Context(), server.identity, proposal, server.now())
+	switch {
+	case errors.Is(err, grouplog.ErrWrongSigner):
+		http.Error(response, "this node is not the group owner", http.StatusConflict)
+	case err != nil:
+		// The rules refused it. The reason is safe to return: the submitter
+		// is a member, and every member can compute it from the log.
+		http.Error(response, err.Error(), http.StatusUnprocessableEntity)
+	default:
+		writeJSON(response, event)
+	}
 }

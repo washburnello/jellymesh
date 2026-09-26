@@ -98,7 +98,7 @@ func newMesh(t *testing.T, names ...string) *mesh {
 // serve starts a loopback replication server for a member.
 func (m *mesh) serve(each *member) {
 	m.t.Helper()
-	each.server = NewServer()
+	each.server = NewServer(each.identity)
 	each.server.Add(m.groupID, each.group)
 	each.address = startTLS(m.t, each.identity, each.server, each.server.Handler())
 }
@@ -298,6 +298,10 @@ func TestAMemberOfOneGroupCannotReadAnother(t *testing.T) {
 	if _, err := spruceClient.Head(context.Background(), m.peer("cedar"), "group-1"); !errors.Is(err, ErrNotServed) {
 		t.Fatalf("spruce reading group-1: error = %v, want ErrNotServed", err)
 	}
+	intrusion, _ := grouplog.NewProposal(spruce, "group-1", "spruce", grouplog.KindLeave, grouplog.MemberBody{MemberID: "spruce"}, now)
+	if _, err := spruceClient.Submit(context.Background(), m.peer("cedar"), "group-1", intrusion); !errors.Is(err, ErrNotServed) {
+		t.Fatalf("spruce submitting to group-1: error = %v, want ErrNotServed", err)
+	}
 }
 
 // A member that serves forged or out-of-order events cannot change the log of
@@ -338,5 +342,80 @@ func TestAPeerServingForgedEventsCannotCorruptTheLog(t *testing.T) {
 	var decoded grouplog.Head
 	if err := json.Unmarshal([]byte(`{"epoch":1,"sequence":1,"hash":"00"}`), &decoded); err == nil {
 		t.Fatal("a malformed hash must not decode")
+	}
+}
+
+func (m *mesh) signed(proposer string, kind grouplog.Kind, body any) grouplog.Proposal {
+	m.t.Helper()
+	proposal, err := grouplog.NewProposal(m.members[proposer].identity, m.groupID, proposer, kind, body, now)
+	if err != nil {
+		m.t.Fatalf("proposal: %v", err)
+	}
+	return proposal
+}
+
+// C-PO-23: an administrator's decision reaches the log by submitting its
+// signed proposal to the owner's node, which sequences it; any member may
+// relay it, and it then replicates like any other event.
+func TestAnAdministratorsProposalIsSequencedByTheOwner(t *testing.T) {
+	m := newMesh(t, "walnut", "maple", "birch")
+	proposal := m.signed("walnut", grouplog.KindEjection, grouplog.MemberBody{MemberID: "birch"})
+
+	event, err := m.client("walnut").Submit(context.Background(), m.peer("cedar"), "group-1", proposal)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	if event.Sequence != m.members["cedar"].group.Head().Sequence {
+		t.Fatal("the returned event should be the owner's new head")
+	}
+	if m.members["cedar"].group.IsTrusted(m.members["birch"].identity.Fingerprint()) {
+		t.Fatal("the owner should have applied the ejection")
+	}
+	if result, err := m.sync("cedar", "maple", 0); err != nil || result.Applied != 1 {
+		t.Fatalf("the sequenced proposal should replicate: %+v, %v", result, err)
+	}
+
+	// A member may relay an administrator's proposal; its signature is what
+	// authorizes it.
+	relayed := m.signed("walnut", grouplog.KindDemote, grouplog.MemberBody{MemberID: "walnut"})
+	if _, err := m.client("maple").Submit(context.Background(), m.peer("cedar"), "group-1", relayed); !errors.Is(err, ErrProposalRefused) {
+		t.Fatalf("an administrator may not demote itself; error = %v, want ErrProposalRefused", err)
+	}
+	promote := m.signed("cedar", grouplog.KindPromote, grouplog.MemberBody{MemberID: "maple"})
+	if _, err := m.client("maple").Submit(context.Background(), m.peer("cedar"), "group-1", promote); err != nil {
+		t.Fatalf("a relayed owner proposal: %v", err)
+	}
+}
+
+// C-PO-23: the rules apply to submitted proposals exactly as to any event.
+func TestTheOwnerRefusesAProposalTheRulesForbid(t *testing.T) {
+	m := newMesh(t, "walnut", "maple")
+	before := m.members["cedar"].group.Head()
+	forbidden := m.signed("maple", grouplog.KindEjection, grouplog.MemberBody{MemberID: "walnut"})
+	if _, err := m.client("maple").Submit(context.Background(), m.peer("cedar"), "group-1", forbidden); !errors.Is(err, ErrProposalRefused) {
+		t.Fatalf("error = %v, want ErrProposalRefused", err)
+	}
+	if m.members["cedar"].group.Head() != before {
+		t.Fatal("a refused proposal must not change the owner's log")
+	}
+}
+
+// C-PO-23: only the owner's node sequences; others say so rather than
+// accepting a proposal they cannot place in the log.
+func TestANodeThatIsNotTheOwnerRefusesToSequence(t *testing.T) {
+	m := newMesh(t, "walnut", "maple")
+	proposal := m.signed("walnut", grouplog.KindEjection, grouplog.MemberBody{MemberID: "maple"})
+	if _, err := m.client("walnut").Submit(context.Background(), m.peer("maple"), "group-1", proposal); !errors.Is(err, ErrNotOwner) {
+		t.Fatalf("error = %v, want ErrNotOwner", err)
+	}
+}
+
+func TestANonMemberCannotSubmit(t *testing.T) {
+	m := newMesh(t, "walnut")
+	outsider := newIdentity(t, "outsider")
+	client := NewClient(outsider, transport.NewMemoryTrustStore(m.members["cedar"].identity.Fingerprint()))
+	proposal, _ := grouplog.NewProposal(outsider, "group-1", "outsider", grouplog.KindLeave, grouplog.MemberBody{MemberID: "outsider"}, now)
+	if _, err := client.Submit(context.Background(), m.peer("cedar"), "group-1", proposal); !errors.Is(err, ErrRefusedByPeer) {
+		t.Fatalf("error = %v, want ErrRefusedByPeer", err)
 	}
 }

@@ -439,7 +439,13 @@ Replication is pull-based over the existing mutual-TLS connections:
 5. A peer level with this node in the same epoch but with a different head hash
    is asked for the event at its head. Either it is a duplicate, or two events
    claim one slot, which is equivocation and halts the log.
-6. Each request is authorized against the one group it names: the connection's
+6. A member submits a signed proposal to the owner's node at
+   `POST /jellymesh/v1/groups/{group}/proposals`, which sequences it and returns
+   the event. A node that is not the owner answers 409, and a proposal the rules
+   refuse is answered 422 with the reason, which any member could compute from
+   the log anyway. Any member may relay a proposal, since its signature is what
+   authorizes it.
+7. Each request is authorized against the one group it names: the connection's
    key must belong to a member of that group. Anything else is answered as not
    found, so a node serving several groups reveals nothing about the others.
 
