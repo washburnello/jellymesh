@@ -81,13 +81,19 @@ func (server *Server) IsTrusted(fingerprint transport.Fingerprint) bool {
 	return false
 }
 
-// Handler returns the replication routes.
+// Handler returns the replication routes on their own, for a listener whose
+// TLS layer already restricts connections to members.
 func (server *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET "+headPath, server.head)
-	mux.HandleFunc("GET "+eventsPath, server.events)
-	mux.HandleFunc("POST "+proposalsPath, server.propose)
+	server.Register(nil, mux)
 	return mux
+}
+
+// Register adds the replication routes, all of which are for members only.
+func (server *Server) Register(_ *http.ServeMux, members *http.ServeMux) {
+	members.HandleFunc("GET "+headPath, server.head)
+	members.HandleFunc("GET "+eventsPath, server.events)
+	members.HandleFunc("POST "+proposalsPath, server.propose)
 }
 
 // authorize returns the requested group if the connection's authenticated

@@ -14,12 +14,13 @@
 package transport
 
 import (
+	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"sync"
 
 	"jellymesh/internal/node"
-	"sync"
 )
 
 var (
@@ -197,4 +198,81 @@ func PeerFingerprint(state tls.ConnectionState) (Fingerprint, error) {
 		return "", ErrNoPeerCertificate
 	}
 	return FingerprintOfCertificate(state.PeerCertificates[0])
+}
+
+// ErrNotEd25519 means a presented certificate does not carry an Ed25519 key,
+// which every Jellymesh node identity does.
+var ErrNotEd25519 = errors.New("peer certificate does not carry an Ed25519 key")
+
+// ServerTLSConfigAuthorizingPerRequest builds the tls.Config for a listener
+// whose handlers authorize each request themselves. It still requires every
+// client to present a certificate with an Ed25519 key, so that each request
+// carries an identity, but it accepts a key this node does not yet trust.
+//
+// The federation listener needs this for exactly one purpose: an invited node
+// redeems its invitation before it is a member. Every other route behind such
+// a listener must check the connection's fingerprint against the roster (see
+// internal/federation, which enforces that for everything except enrollment).
+func ServerTLSConfigAuthorizingPerRequest(certificate tls.Certificate) *tls.Config {
+	return &tls.Config{
+		MinVersion:            tls.VersionTLS13,
+		Certificates:          []tls.Certificate{certificate},
+		ClientAuth:            tls.RequireAnyClientCert,
+		VerifyPeerCertificate: requireEd25519Certificate,
+	}
+}
+
+func requireEd25519Certificate(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+	if len(rawCerts) == 0 {
+		return ErrNoPeerCertificate
+	}
+	leaf, err := x509.ParseCertificate(rawCerts[0])
+	if err != nil {
+		return err
+	}
+	if _, ok := leaf.PublicKey.(ed25519.PublicKey); !ok {
+		return ErrNotEd25519
+	}
+	return nil
+}
+
+// PeerPublicKey returns the Ed25519 key of the authenticated peer.
+func PeerPublicKey(state tls.ConnectionState) (ed25519.PublicKey, error) {
+	if len(state.PeerCertificates) == 0 {
+		return nil, ErrNoPeerCertificate
+	}
+	key, ok := state.PeerCertificates[0].PublicKey.(ed25519.PublicKey)
+	if !ok {
+		return nil, ErrNotEd25519
+	}
+	return key, nil
+}
+
+// ClientTLSConfigMatching builds a client config that accepts the server only
+// if match approves its fingerprint. An invitation's short code carries only a
+// prefix of the inviter's fingerprint, and this is how the joining node pins
+// the inviter with it before it has anything else to trust.
+func ClientTLSConfigMatching(certificate tls.Certificate, match func(Fingerprint) bool) *tls.Config {
+	return &tls.Config{
+		MinVersion:         tls.VersionTLS13,
+		Certificates:       []tls.Certificate{certificate},
+		InsecureSkipVerify: true, // replaced by VerifyPeerCertificate, as in ClientTLSConfig.
+		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+			if len(rawCerts) == 0 {
+				return ErrNoPeerCertificate
+			}
+			leaf, err := x509.ParseCertificate(rawCerts[0])
+			if err != nil {
+				return err
+			}
+			fingerprint, err := FingerprintOfCertificate(leaf)
+			if err != nil {
+				return err
+			}
+			if match == nil || !match(fingerprint) {
+				return ErrPeerMismatch
+			}
+			return nil
+		},
+	}
 }
