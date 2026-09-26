@@ -293,3 +293,35 @@ func TestMigrationCarriesExistingBlocksForward(t *testing.T) {
 		t.Fatal("a peer blocked before the migration must stay blocked after it")
 	}
 }
+
+// C-ST-8: stored timestamps sort as strings in chronological order, including
+// across values whose fractional seconds have different numbers of digits.
+func TestStoredTimestampsSortChronologically(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	offsets := []time.Duration{
+		0,
+		100 * time.Millisecond,
+		150 * time.Millisecond,
+		500 * time.Millisecond,
+		time.Second,
+		time.Second + time.Nanosecond,
+	}
+	for index := 1; index < len(offsets); index++ {
+		earlier := FormatTime(base.Add(offsets[index-1]))
+		later := FormatTime(base.Add(offsets[index]))
+		if !(earlier < later) {
+			t.Fatalf("%q does not sort before %q", earlier, later)
+		}
+	}
+	for _, offset := range offsets {
+		want := base.Add(offset)
+		got, err := ParseTime(FormatTime(want))
+		if err != nil || !got.Equal(want) {
+			t.Fatalf("round trip of %v = %v, %v", want, got, err)
+		}
+	}
+	// Values written in the previous, variable-width encoding still parse.
+	if got, err := ParseTime("2026-01-01T00:00:00.5Z"); err != nil || !got.Equal(base.Add(500*time.Millisecond)) {
+		t.Fatalf("legacy value parsed as %v, %v", got, err)
+	}
+}

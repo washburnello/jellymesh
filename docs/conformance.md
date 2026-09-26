@@ -86,6 +86,7 @@ findings in [plan-review.md](plan-review.md).
 | C-ST-5 | A failed or incomplete sync never discards known-good state | `TestRecordFailurePreservesTheExistingCursor` | PASS |
 | C-ST-6 | Provider health uses hysteresis; one failed request does not mark a provider offline | `TestSyncStateTransitionsFromUnknownThroughDegradedToUnavailable` | PASS |
 | C-ST-7 | Encrypted backup and restore of keys, configuration, publications, opt-outs, and sync state | none yet | PENDING |
+| C-ST-8 | Stored timestamps compare as strings in chronological order, so SQL comparisons and ordering on time columns are correct | `TestStoredTimestampsSortChronologically` | PASS |
 
 ## 7. History and progress
 

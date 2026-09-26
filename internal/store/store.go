@@ -25,11 +25,13 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// TimeFormat is how every timestamp column is encoded. RFC3339 in UTC sorts
-// lexicographically in the same order it sorts chronologically, so ordinary
-// string comparison in SQL gives correct time ordering, and the stored value
-// stays readable to an operator inspecting the database during an incident.
-const TimeFormat = time.RFC3339Nano
+// TimeFormat is how every timestamp column is encoded: RFC 3339 in UTC with a
+// fixed nine-digit fraction. Fixed width is what makes string comparison in
+// SQL agree with chronological order, which the retention sweep and any
+// ORDER BY on a time column rely on. time.RFC3339Nano does not have that
+// property: it trims trailing zeros, so "...:00Z" sorts after "...:00.5Z".
+// The value also stays readable to an operator inspecting the database.
+const TimeFormat = "2006-01-02T15:04:05.000000000Z07:00"
 
 var (
 	ErrPathRequired = errors.New("a database path is required")
@@ -171,7 +173,9 @@ func ParseTime(value string) (time.Time, error) {
 	if value == "" {
 		return time.Time{}, nil
 	}
-	return time.Parse(TimeFormat, value)
+	// RFC3339Nano parsing accepts any fraction length, so values written in
+	// the fixed-width format and any written before it both parse.
+	return time.Parse(time.RFC3339Nano, value)
 }
 
 // nowUTC is a package-level seam so that migration timestamps can be made
