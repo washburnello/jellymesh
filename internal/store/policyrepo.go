@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -71,11 +72,12 @@ func (repo *PolicyRepository) Save(ctx context.Context, state *policy.State) err
 		for invitationID, invitation := range state.Invitations {
 			if _, err := tx.ExecContext(ctx, `
 				INSERT INTO invitations (
-					invitation_id, group_id, inviter_id, invitee_id, code_hash,
-					fingerprint, approval_id, status, created_at, expires_at
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					invitation_id, group_id, inviter_id, invitee_id, code_hash, fingerprint,
+					member_key, friendly_name, public_hostname, status, created_at, expires_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				invitationID, groupID, invitation.InviterID, invitation.InviteeID, invitation.CodeHash,
-				invitation.Fingerprint, invitation.ApprovalID, string(invitation.Status),
+				invitation.Fingerprint, hex.EncodeToString(invitation.PublicKey), invitation.FriendlyName,
+				invitation.PublicHostname, string(invitation.Status),
 				FormatTime(invitation.CreatedAt), FormatTime(invitation.ExpiresAt),
 			); err != nil {
 				return fmt.Errorf("insert invitation %q: %w", invitationID, err)
@@ -243,7 +245,8 @@ func loadOptOuts(ctx context.Context, db *sql.DB, groupID string, state *policy.
 
 func loadInvitations(ctx context.Context, db *sql.DB, groupID string, state *policy.State) error {
 	rows, err := db.QueryContext(ctx, `
-		SELECT invitation_id, inviter_id, invitee_id, code_hash, fingerprint, approval_id, status, created_at, expires_at
+		SELECT invitation_id, inviter_id, invitee_id, code_hash, fingerprint, member_key,
+		       friendly_name, public_hostname, status, created_at, expires_at
 		FROM invitations WHERE group_id = ?`, groupID)
 	if err != nil {
 		return fmt.Errorf("load invitations: %w", err)
@@ -251,30 +254,27 @@ func loadInvitations(ctx context.Context, db *sql.DB, groupID string, state *pol
 	defer rows.Close()
 
 	for rows.Next() {
-		var invitationID, inviterID, inviteeID, codeHash, fingerprint, approvalID, status, createdAtRaw, expiresAtRaw string
-		if err := rows.Scan(&invitationID, &inviterID, &inviteeID, &codeHash, &fingerprint, &approvalID, &status, &createdAtRaw, &expiresAtRaw); err != nil {
+		var invitation policy.Invitation
+		var memberKey, status, createdAtRaw, expiresAtRaw string
+		if err := rows.Scan(&invitation.InvitationID, &invitation.InviterID, &invitation.InviteeID,
+			&invitation.CodeHash, &invitation.Fingerprint, &memberKey, &invitation.FriendlyName,
+			&invitation.PublicHostname, &status, &createdAtRaw, &expiresAtRaw); err != nil {
 			return fmt.Errorf("scan invitation: %w", err)
 		}
-		createdAt, err := ParseTime(createdAtRaw)
-		if err != nil {
-			return fmt.Errorf("parse created_at for invitation %q: %w", invitationID, err)
+		invitation.GroupID = groupID
+		invitation.Status = policy.InvitationStatus(status)
+		if memberKey != "" {
+			if invitation.PublicKey, err = hex.DecodeString(memberKey); err != nil {
+				return fmt.Errorf("decode member_key for invitation %q: %w", invitation.InvitationID, err)
+			}
 		}
-		expiresAt, err := ParseTime(expiresAtRaw)
-		if err != nil {
-			return fmt.Errorf("parse expires_at for invitation %q: %w", invitationID, err)
+		if invitation.CreatedAt, err = ParseTime(createdAtRaw); err != nil {
+			return fmt.Errorf("parse created_at for invitation %q: %w", invitation.InvitationID, err)
 		}
-		state.Invitations[invitationID] = policy.Invitation{
-			GroupID:      groupID,
-			InvitationID: invitationID,
-			InviterID:    inviterID,
-			InviteeID:    inviteeID,
-			CodeHash:     codeHash,
-			Fingerprint:  fingerprint,
-			ApprovalID:   approvalID,
-			Status:       policy.InvitationStatus(status),
-			CreatedAt:    createdAt,
-			ExpiresAt:    expiresAt,
+		if invitation.ExpiresAt, err = ParseTime(expiresAtRaw); err != nil {
+			return fmt.Errorf("parse expires_at for invitation %q: %w", invitation.InvitationID, err)
 		}
+		state.Invitations[invitation.InvitationID] = invitation
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("load invitations: %w", err)

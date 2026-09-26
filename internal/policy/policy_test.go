@@ -1,6 +1,8 @@
 package policy
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -67,18 +69,31 @@ func stageTestLibrary(t *testing.T, state *State, roster Roster, nodeID string, 
 	}
 }
 
-// redeemTestInvitation creates an invitation from cedar and redeems it for
-// nodeID, leaving it awaiting approval.
-func redeemTestInvitation(t *testing.T, state *State, roster Roster, nodeID string) string {
+func newInvitee(t *testing.T, nodeID string, libraries ...string) Invitee {
 	t.Helper()
-	invitationID := "invite-" + nodeID
-	if err := state.CreateInvitation(roster, "cedar", invitationID, "hash-"+nodeID, time.Now().Add(time.Hour)); err != nil {
+	public, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	invitee := Invitee{NodeID: nodeID, PublicKey: public, FriendlyName: nodeID, PublicHostname: nodeID + ".example.org"}
+	for _, id := range libraries {
+		invitee.Libraries = append(invitee.Libraries, library(id))
+	}
+	return invitee
+}
+
+// redeemTestInvitation creates an invitation from cedar and redeems it for
+// nodeID with one library, leaving it awaiting approval.
+func redeemTestInvitation(t *testing.T, state *State, roster Roster, nodeID string) Invitation {
+	t.Helper()
+	if err := state.CreateInvitation(roster, "cedar", "invite-"+nodeID, "hash-"+nodeID, time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("create invitation: %v", err)
 	}
-	if err := state.RedeemInvitation(roster, invitationID, nodeID, "fingerprint-"+nodeID); err != nil {
+	invitation, err := state.RedeemInvitation(roster, "hash-"+nodeID, newInvitee(t, nodeID, "movies"))
+	if err != nil {
 		t.Fatalf("redeem invitation: %v", err)
 	}
-	return invitationID
+	return invitation
 }
 
 func TestStateRequiresAGroup(t *testing.T) {
@@ -210,7 +225,8 @@ func TestPublishedLibraryCountOnlyCountsSource(t *testing.T) {
 
 // --- invitations -----------------------------------------------------------
 
-// C-PO-3: any member may invite; only an owner or administrator may approve.
+// C-PO-3: any member may invite; only an owner or administrator may approve,
+// and approving means signing the admission AdmissionFor builds.
 func TestAnyMemberCanInviteButOnlyAdminsApprove(t *testing.T) {
 	state, roster := newTestState(t), newFakeRoster("maple")
 	if err := state.CreateInvitation(roster, "maple", "invite-1", "hash-1", time.Now().Add(time.Hour)); err != nil {
@@ -219,14 +235,13 @@ func TestAnyMemberCanInviteButOnlyAdminsApprove(t *testing.T) {
 	if err := state.CreateInvitation(roster, "stranger", "invite-2", "hash-2", time.Now().Add(time.Hour)); !errors.Is(err, ErrNotMember) {
 		t.Fatalf("a non-member inviting: error = %v, want ErrNotMember", err)
 	}
-	stageTestLibrary(t, state, roster, "birch", "movies")
-	if err := state.RedeemInvitation(roster, "invite-1", "birch", "fingerprint-birch"); err != nil {
+	if _, err := state.RedeemInvitation(roster, "hash-1", newInvitee(t, "birch", "movies")); err != nil {
 		t.Fatalf("redeem: %v", err)
 	}
-	if err := state.ApproveInvitation(roster, "maple", "invite-1", "approval-1"); !errors.Is(err, ErrNotAdministrator) {
+	if _, err := state.AdmissionFor(roster, "maple", "invite-1"); !errors.Is(err, ErrNotAdministrator) {
 		t.Fatalf("an ordinary member approving: error = %v, want ErrNotAdministrator", err)
 	}
-	if err := state.ApproveInvitation(roster, "cedar", "invite-1", "approval-1"); err != nil {
+	if _, err := state.AdmissionFor(roster, "cedar", "invite-1"); err != nil {
 		t.Fatalf("the owner should be able to approve: %v", err)
 	}
 }
@@ -235,9 +250,8 @@ func TestAnyMemberCanInviteButOnlyAdminsApprove(t *testing.T) {
 func TestPromotedAdministratorCanApproveInvitations(t *testing.T) {
 	state, roster := newTestState(t), newFakeRoster("walnut")
 	roster.admins["walnut"] = true
-	stageTestLibrary(t, state, roster, "birch", "movies")
-	invitationID := redeemTestInvitation(t, state, roster, "birch")
-	if err := state.ApproveInvitation(roster, "walnut", invitationID, "approval-1"); err != nil {
+	invitation := redeemTestInvitation(t, state, roster, "birch")
+	if _, err := state.AdmissionFor(roster, "walnut", invitation.InvitationID); err != nil {
 		t.Fatalf("an administrator should be able to approve: %v", err)
 	}
 }
@@ -246,26 +260,57 @@ func TestPromotedAdministratorCanApproveInvitations(t *testing.T) {
 func TestAdministratorCanDenyInvitation(t *testing.T) {
 	state, roster := newTestState(t), newFakeRoster("walnut", "maple")
 	roster.admins["walnut"] = true
-	invitationID := redeemTestInvitation(t, state, roster, "birch")
-	if err := state.DenyInvitation(roster, "maple", invitationID); !errors.Is(err, ErrNotAdministrator) {
+	invitation := redeemTestInvitation(t, state, roster, "birch")
+	if err := state.DenyInvitation(roster, "maple", invitation.InvitationID); !errors.Is(err, ErrNotAdministrator) {
 		t.Fatalf("an ordinary member denying: error = %v, want ErrNotAdministrator", err)
 	}
-	if err := state.DenyInvitation(roster, "walnut", invitationID); err != nil {
+	if err := state.DenyInvitation(roster, "walnut", invitation.InvitationID); err != nil {
 		t.Fatalf("deny: %v", err)
 	}
-	if invitation, _ := state.InvitationByID(invitationID); invitation.Status != InvitationDenied {
-		t.Fatalf("status = %q, want denied", invitation.Status)
+	if got, _ := state.InvitationByID(invitation.InvitationID); got.Status != InvitationDenied {
+		t.Fatalf("status = %q, want denied", got.Status)
 	}
-	if err := state.ApproveInvitation(roster, "cedar", invitationID, "approval-1"); !errors.Is(err, ErrInvitationNotPending) {
+	if _, err := state.AdmissionFor(roster, "cedar", invitation.InvitationID); !errors.Is(err, ErrInvitationNotPending) {
 		t.Fatalf("approving a denied invitation: error = %v, want ErrInvitationNotPending", err)
+	}
+}
+
+// C-EN-2: the admission binds the key the invitee presented when it redeemed.
+func TestRedemptionRecordsTheKeyTheInviteePresented(t *testing.T) {
+	state, roster := newTestState(t), newFakeRoster()
+	state.CreateInvitation(roster, "cedar", "invite-1", "hash-1", time.Now().Add(time.Hour))
+	invitee := newInvitee(t, "birch", "movies")
+	invitation, err := state.RedeemInvitation(roster, "hash-1", invitee)
+	if err != nil {
+		t.Fatalf("redeem: %v", err)
+	}
+	fingerprint, _ := node.FingerprintOfPublicKey(invitee.PublicKey)
+	if invitation.Fingerprint != string(fingerprint) {
+		t.Fatal("the invitation should record the invitee's fingerprint")
+	}
+	if found, ok := state.InvitationByFingerprint(string(fingerprint)); !ok || found.InvitationID != "invite-1" {
+		t.Fatal("the invitee should be able to find its own request by its key")
+	}
+	body, err := state.AdmissionFor(roster, "cedar", "invite-1")
+	if err != nil {
+		t.Fatalf("admission: %v", err)
+	}
+	if !ed25519.PublicKey(body.MemberKey).Equal(invitee.PublicKey) || body.MemberID != "birch" || body.InviterID != "cedar" {
+		t.Fatalf("admission body %+v does not bind the redeemed key", body)
+	}
+	if _, err := state.RedeemInvitation(roster, "hash-1", Invitee{NodeID: "birch", PublicKey: []byte("short"), Libraries: []Library{library("tv")}}); err == nil {
+		t.Fatal("a malformed key must be refused")
 	}
 }
 
 func TestInvitationCannotBeReused(t *testing.T) {
 	state, roster := newTestState(t), newFakeRoster()
 	redeemTestInvitation(t, state, roster, "birch")
-	if err := state.RedeemInvitation(roster, "invite-birch", "spruce", "fingerprint-spruce"); !errors.Is(err, ErrInvitationAlreadyUsed) {
+	if _, err := state.RedeemInvitation(roster, "hash-birch", newInvitee(t, "spruce", "movies")); !errors.Is(err, ErrInvitationAlreadyUsed) {
 		t.Fatalf("error = %v, want ErrInvitationAlreadyUsed", err)
+	}
+	if _, err := state.RedeemInvitation(roster, "hash-unknown", newInvitee(t, "spruce", "movies")); !errors.Is(err, ErrInvitationNotFound) {
+		t.Fatalf("unknown code: error = %v, want ErrInvitationNotFound", err)
 	}
 }
 
@@ -284,7 +329,7 @@ func TestInvitationExpiryUsesTheInjectedClock(t *testing.T) {
 		t.Fatalf("create invitation: %v", err)
 	}
 	state.Now = func() time.Time { return base.Add(2 * time.Hour) }
-	if err := state.RedeemInvitation(roster, "invite-1", "birch", "fingerprint-birch"); !errors.Is(err, ErrInvitationExpired) {
+	if _, err := state.RedeemInvitation(roster, "hash-1", newInvitee(t, "birch", "movies")); !errors.Is(err, ErrInvitationExpired) {
 		t.Fatalf("error = %v, want ErrInvitationExpired", err)
 	}
 }
@@ -292,26 +337,31 @@ func TestInvitationExpiryUsesTheInjectedClock(t *testing.T) {
 func TestAMemberCannotRedeemAnInvitation(t *testing.T) {
 	state, roster := newTestState(t), newFakeRoster("maple")
 	state.CreateInvitation(roster, "cedar", "invite-1", "hash-1", time.Now().Add(time.Hour))
-	if err := state.RedeemInvitation(roster, "invite-1", "maple", "fingerprint-maple"); !errors.Is(err, ErrAlreadyMember) {
+	if _, err := state.RedeemInvitation(roster, "hash-1", newInvitee(t, "maple", "movies")); !errors.Is(err, ErrAlreadyMember) {
 		t.Fatalf("error = %v, want ErrAlreadyMember", err)
 	}
 }
 
 // --- admission rule and reconciliation -------------------------------------
 
-// C-PO-6: a joining node satisfies the admission rule with staged candidates,
-// before it is a member, and approval requires it.
+// C-PO-6: redemption requires at least one library and stages it, so the
+// admission rule is satisfied before the node is a member.
 func TestAdmissionRuleIsSatisfiedByStagedCandidates(t *testing.T) {
 	state, roster := newTestState(t), newFakeRoster()
-	invitationID := redeemTestInvitation(t, state, roster, "birch")
-	if err := state.ApproveInvitation(roster, "cedar", invitationID, "approval-1"); !errors.Is(err, ErrInsufficientPublications) {
-		t.Fatalf("approval without a staged library: error = %v, want ErrInsufficientPublications", err)
+	state.CreateInvitation(roster, "cedar", "invite-1", "hash-1", time.Now().Add(time.Hour))
+	if _, err := state.RedeemInvitation(roster, "hash-1", newInvitee(t, "birch")); !errors.Is(err, ErrInsufficientPublications) {
+		t.Fatalf("redemption without a library: error = %v, want ErrInsufficientPublications", err)
 	}
-	stageTestLibrary(t, state, roster, "birch", "movies")
+	if invitation, _ := state.InvitationByID("invite-1"); invitation.Status != InvitationCreated {
+		t.Fatal("a refused redemption must leave the invitation usable")
+	}
+	if _, err := state.RedeemInvitation(roster, "hash-1", newInvitee(t, "birch", "movies")); err != nil {
+		t.Fatalf("redemption with a library: %v", err)
+	}
 	if err := state.ValidateMemberAdmission("birch"); err != nil {
 		t.Fatalf("a staged candidate should satisfy the rule: %v", err)
 	}
-	if err := state.ApproveInvitation(roster, "cedar", invitationID, "approval-1"); err != nil {
+	if _, err := state.AdmissionFor(roster, "cedar", "invite-1"); err != nil {
 		t.Fatalf("approval with a staged library: %v", err)
 	}
 	if state.CanConsume(roster, "birch", "movies") {
@@ -389,16 +439,30 @@ func TestTheGroupLogDrivesPublicationState(t *testing.T) {
 		_, err = log.Sequence(identities["cedar"], proposal, now)
 		return err
 	}
-	admission := grouplog.AdmissionBody{MemberID: "maple", MemberKey: identities["maple"].PublicKey(), InvitationID: "invite-maple", InviterID: "cedar"}
+	var admission grouplog.AdmissionBody
 
 	state := newTestState(t)
-	stageTestLibrary(t, state, log.State(), "maple", "movies")
+	state.Now = func() time.Time { return now }
+	if err := state.CreateInvitation(log.State(), "cedar", "invite-maple", "hash-maple", now.Add(time.Hour)); err != nil {
+		t.Fatalf("create invitation: %v", err)
+	}
+	invitee := Invitee{NodeID: "maple", PublicKey: identities["maple"].PublicKey(), Libraries: []Library{library("movies")}}
+	if _, err := state.RedeemInvitation(log.State(), "hash-maple", invitee); err != nil {
+		t.Fatalf("redeem: %v", err)
+	}
+	admission, err = state.AdmissionFor(log.State(), "cedar", "invite-maple")
+	if err != nil {
+		t.Fatalf("admission for: %v", err)
+	}
 	if err := sequence(grouplog.KindAdmission, admission); err != nil {
 		t.Fatalf("admit: %v", err)
 	}
 	state.Reconcile(log.State())
 	if !state.CanConsume(log.State(), "maple", "movies") {
 		t.Fatal("an admitted member's staged library should be live")
+	}
+	if invitation, _ := state.InvitationByID("invite-maple"); invitation.Status != InvitationAdmitted {
+		t.Fatalf("invitation status = %q, want admitted", invitation.Status)
 	}
 
 	if err := sequence(grouplog.KindEjection, grouplog.MemberBody{MemberID: "maple"}); err != nil {

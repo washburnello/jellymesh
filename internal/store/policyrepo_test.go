@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -50,25 +52,30 @@ func buildPolicyState(t *testing.T) (*policy.State, staticRoster) {
 	}
 
 	expires := policyTime.Add(time.Hour)
-	for _, id := range []string{"created", "pending", "approved", "denied"} {
+	for _, id := range []string{"created", "pending", "admitted", "denied"} {
 		if err := state.CreateInvitation(roster, "cedar", "invite-"+id, "hash-"+id, expires); err != nil {
 			t.Fatalf("create %s: %v", id, err)
 		}
 	}
-	for _, id := range []string{"pending", "approved", "denied"} {
-		if err := state.RedeemInvitation(roster, "invite-"+id, "juniper-"+id, "fingerprint-"+id); err != nil {
+	for _, id := range []string{"pending", "admitted", "denied"} {
+		public, _, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatalf("key: %v", err)
+		}
+		invitee := policy.Invitee{
+			NodeID: "juniper-" + id, PublicKey: public, FriendlyName: "Juniper " + id, PublicHostname: id + ".example.org",
+			Libraries: []policy.Library{{ID: "music-" + id, Name: "Music", CollectionType: "music"}},
+		}
+		if _, err := state.RedeemInvitation(roster, "hash-"+id, invitee); err != nil {
 			t.Fatalf("redeem %s: %v", id, err)
 		}
-	}
-	if err := state.PublishCandidate(roster, policy.Publication{GroupID: "group-1", SourceNodeID: "juniper-approved", Library: policy.Library{ID: "music", Name: "music", CollectionType: "music"}}); err != nil {
-		t.Fatalf("stage for approval: %v", err)
-	}
-	if err := state.ApproveInvitation(roster, "cedar", "invite-approved", "approval-1"); err != nil {
-		t.Fatalf("approve: %v", err)
 	}
 	if err := state.DenyInvitation(roster, "cedar", "invite-denied"); err != nil {
 		t.Fatalf("deny: %v", err)
 	}
+	roster["juniper-admitted"] = true
+	state.Reconcile(roster)
+	delete(roster, "juniper-admitted")
 	return state, roster
 }
 

@@ -204,6 +204,18 @@ var migrations = []string{
 	ALTER TABLE group_state DROP COLUMN membership_sequence;
 	ALTER TABLE group_state RENAME TO owner_watch;
 	`,
+
+	// 6: a redeemed invitation records the invitee's key, taken from the
+	// certificate it redeemed with, because the admission binds that key.
+	// Approval is a signed proposal made on the approver's own node, so the
+	// inviter no longer records an approval ID.
+	`
+	ALTER TABLE invitations ADD COLUMN member_key TEXT NOT NULL DEFAULT '';
+	ALTER TABLE invitations ADD COLUMN friendly_name TEXT NOT NULL DEFAULT '';
+	ALTER TABLE invitations ADD COLUMN public_hostname TEXT NOT NULL DEFAULT '';
+	ALTER TABLE invitations DROP COLUMN approval_id;
+	CREATE INDEX idx_invitations_code ON invitations(code_hash);
+	`,
 }
 
 func (database *DB) migrate(ctx context.Context) error {

@@ -11,9 +11,13 @@
 package policy
 
 import (
+	"crypto/ed25519"
 	"errors"
 	"strings"
 	"time"
+
+	"jellymesh/internal/grouplog"
+	"jellymesh/internal/node"
 )
 
 const MinimumPublishedLibraries = 1
@@ -67,9 +71,13 @@ type InvitationStatus string
 const (
 	InvitationCreated          InvitationStatus = "created"
 	InvitationAwaitingApproval InvitationStatus = "awaiting_approval"
-	InvitationApproved         InvitationStatus = "approved"
 	InvitationDenied           InvitationStatus = "denied"
 	InvitationExpired          InvitationStatus = "expired"
+	// InvitationAdmitted means the group log has admitted the invitee.
+	// Approval is not a status here: it is a signed admission proposal made
+	// by an owner or administrator on its own node, and it takes effect when
+	// the log contains it.
+	InvitationAdmitted InvitationStatus = "admitted"
 )
 
 // Invitation is held only by the node that issued it. Other members learn of
@@ -78,13 +86,29 @@ type Invitation struct {
 	GroupID      string
 	InvitationID string
 	InviterID    string
-	InviteeID    string
 	CodeHash     string
-	Fingerprint  string
-	ApprovalID   string
 	Status       InvitationStatus
 	CreatedAt    time.Time
 	ExpiresAt    time.Time
+
+	// The invitee, as recorded at redemption. PublicKey comes from the
+	// certificate the invitee presented when it redeemed, never from a value
+	// it merely asserted, and it is the key the admission will bind.
+	InviteeID      string
+	PublicKey      []byte
+	Fingerprint    string
+	FriendlyName   string
+	PublicHostname string
+}
+
+// Invitee is the node redeeming an invitation.
+type Invitee struct {
+	NodeID         string
+	PublicKey      ed25519.PublicKey
+	FriendlyName   string
+	PublicHostname string
+	// Libraries are the candidate publications the admission rule requires.
+	Libraries []Library
 }
 
 type State struct {
@@ -137,14 +161,21 @@ func (state *State) now() time.Time {
 // Reconciling with the roster.
 // ---------------------------------------------------------------------------
 
-// Reconcile brings this node's publication view into line with the roster
-// after the group log changes. A node that is no longer a member has its
-// publications removed (C-PO-5); a staged candidate that the log has admitted
-// is promoted into the live pool; an ejected node's staged candidates are
-// discarded. It is idempotent, so it can simply run after every change.
+// Reconcile brings this node's policy into line with the roster after the
+// group log changes. A node that is no longer a member has its publications
+// removed (C-PO-5); a staged candidate that the log has admitted is promoted
+// into the live pool; an ejected node's staged candidates are discarded; and
+// an invitation whose invitee the log has admitted is marked admitted. It is
+// idempotent, so it can simply run after every change.
 func (state *State) Reconcile(roster Roster) {
 	if state == nil || roster == nil {
 		return
+	}
+	for id, invitation := range state.Invitations {
+		if invitation.Status == InvitationAwaitingApproval && roster.IsMember(invitation.InviteeID) {
+			invitation.Status = InvitationAdmitted
+			state.Invitations[id] = invitation
+		}
 	}
 	for key, publication := range state.Published {
 		if !roster.IsMember(publication.SourceNodeID) {
@@ -209,68 +240,120 @@ func (state *State) InvitationByID(invitationID string) (Invitation, bool) {
 	return invitation, ok
 }
 
-// RedeemInvitation binds an invitation to the invitee's identity fingerprint.
-// Expiration applies until redemption; once redeemed the request stays pending
-// until an owner or administrator decides it.
-func (state *State) RedeemInvitation(roster Roster, invitationID string, inviteeID string, fingerprint string) error {
+// RedeemInvitation records the invitee against the invitation whose secret
+// hashes to codeHash, stages its candidate libraries, and leaves the request
+// awaiting a decision. Expiration applies until redemption; once redeemed the
+// request stays pending until an owner or administrator decides it.
+//
+// The admission rule is enforced here, at the one node that holds the
+// candidates: a redemption offering no library is refused.
+func (state *State) RedeemInvitation(roster Roster, codeHash string, invitee Invitee) (Invitation, error) {
 	if state == nil {
-		return errors.New("policy state is nil")
+		return Invitation{}, errors.New("policy state is nil")
 	}
-	if err := validateNode(inviteeID); err != nil {
-		return err
+	if err := validateNode(invitee.NodeID); err != nil {
+		return Invitation{}, err
 	}
-	invitation, ok := state.Invitations[strings.TrimSpace(invitationID)]
+	invitation, ok := state.invitationByCodeHash(codeHash)
 	if !ok {
-		return ErrInvitationNotFound
+		return Invitation{}, ErrInvitationNotFound
 	}
 	if state.now().After(invitation.ExpiresAt) {
 		invitation.Status = InvitationExpired
 		state.Invitations[invitation.InvitationID] = invitation
-		return ErrInvitationExpired
+		return Invitation{}, ErrInvitationExpired
 	}
 	if invitation.Status != InvitationCreated {
-		return ErrInvitationAlreadyUsed
+		return Invitation{}, ErrInvitationAlreadyUsed
 	}
-	fingerprint = strings.TrimSpace(fingerprint)
-	if fingerprint == "" {
-		return ErrInvalidInvitation
+	fingerprint, err := node.FingerprintOfPublicKey(invitee.PublicKey)
+	if err != nil {
+		return Invitation{}, ErrInvalidInvitation
 	}
-	if roster != nil && roster.IsMember(inviteeID) {
-		return ErrAlreadyMember
+	if roster != nil && roster.IsMember(invitee.NodeID) {
+		return Invitation{}, ErrAlreadyMember
 	}
-	invitation.InviteeID = strings.TrimSpace(inviteeID)
-	invitation.Fingerprint = fingerprint
+	if len(invitee.Libraries) < MinimumPublishedLibraries {
+		return Invitation{}, ErrInsufficientPublications
+	}
+	candidates := make([]Publication, 0, len(invitee.Libraries))
+	for _, library := range invitee.Libraries {
+		candidate := Publication{GroupID: state.GroupID, SourceNodeID: strings.TrimSpace(invitee.NodeID), Library: library}
+		if err := state.validatePublication(&candidate); err != nil {
+			return Invitation{}, err
+		}
+		candidates = append(candidates, candidate)
+	}
+	for _, candidate := range candidates {
+		state.Candidates[publicationKey(candidate.SourceNodeID, candidate.Library.ID)] = candidate
+	}
+
+	invitation.InviteeID = strings.TrimSpace(invitee.NodeID)
+	invitation.PublicKey = append([]byte(nil), invitee.PublicKey...)
+	invitation.Fingerprint = string(fingerprint)
+	invitation.FriendlyName = invitee.FriendlyName
+	invitation.PublicHostname = invitee.PublicHostname
 	invitation.Status = InvitationAwaitingApproval
 	state.Invitations[invitation.InvitationID] = invitation
-	return nil
+	return invitation, nil
 }
 
-// ApproveInvitation is available to the owner and to any administrator.
-func (state *State) ApproveInvitation(roster Roster, actorID string, invitationID string, approvalID string) error {
+func (state *State) invitationByCodeHash(codeHash string) (Invitation, bool) {
+	codeHash = strings.TrimSpace(codeHash)
+	if codeHash == "" {
+		return Invitation{}, false
+	}
+	for _, invitation := range state.Invitations {
+		if invitation.CodeHash == codeHash {
+			return invitation, true
+		}
+	}
+	return Invitation{}, false
+}
+
+// InvitationByFingerprint finds the redeemed invitation for an invitee key,
+// which is how an invitee asks about its own request.
+func (state *State) InvitationByFingerprint(fingerprint string) (Invitation, bool) {
+	if state == nil || fingerprint == "" {
+		return Invitation{}, false
+	}
+	for _, invitation := range state.Invitations {
+		if invitation.Fingerprint == fingerprint {
+			return invitation, true
+		}
+	}
+	return Invitation{}, false
+}
+
+// AdmissionFor builds the admission an owner or administrator signs to approve
+// a redeemed invitation. The body binds the key the invitee presented at
+// redemption. Signing it as a proposal and having the owner sequence it is
+// the approval; nothing is recorded here.
+func (state *State) AdmissionFor(roster Roster, approverID string, invitationID string) (grouplog.AdmissionBody, error) {
 	if state == nil {
-		return errors.New("policy state is nil")
+		return grouplog.AdmissionBody{}, errors.New("policy state is nil")
 	}
-	if roster == nil || !roster.IsAdministrator(actorID) {
-		return ErrNotAdministrator
-	}
-	approvalID = strings.TrimSpace(approvalID)
-	if approvalID == "" {
-		return ErrInvalidInvitation
+	if roster == nil || !roster.IsAdministrator(approverID) {
+		return grouplog.AdmissionBody{}, ErrNotAdministrator
 	}
 	invitation, ok := state.Invitations[strings.TrimSpace(invitationID)]
 	if !ok {
-		return ErrInvitationNotFound
+		return grouplog.AdmissionBody{}, ErrInvitationNotFound
 	}
 	if invitation.Status != InvitationAwaitingApproval {
-		return ErrInvitationNotPending
+		return grouplog.AdmissionBody{}, ErrInvitationNotPending
 	}
 	if err := state.ValidateMemberAdmission(invitation.InviteeID); err != nil {
-		return err
+		return grouplog.AdmissionBody{}, err
 	}
-	invitation.ApprovalID = approvalID
-	invitation.Status = InvitationApproved
-	state.Invitations[invitation.InvitationID] = invitation
-	return nil
+	return grouplog.AdmissionBody{
+		MemberID:       invitation.InviteeID,
+		MemberKey:      append([]byte(nil), invitation.PublicKey...),
+		FriendlyName:   invitation.FriendlyName,
+		PublicHostname: invitation.PublicHostname,
+		InvitationID:   invitation.InvitationID,
+		InviterID:      invitation.InviterID,
+	}, nil
 }
 
 func (state *State) DenyInvitation(roster Roster, actorID string, invitationID string) error {
