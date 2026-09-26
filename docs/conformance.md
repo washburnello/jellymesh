@@ -163,10 +163,12 @@ every tombstone.
 
 Not provable by unit test. These are the Phase 5 gates.
 
-| ID | Criterion |
-|---|---|
-| M-1 | Stock Jellyfin Web, Android, Android TV, iOS/Swiftfin, and Roku TV can browse, play, seek, and report progress |
-| M-2 | Public HTTPS works from an external network without Tailscale |
-| M-3 | Backup, restore, key rotation, and rollback drills succeed |
-| M-4 | A multi-home pilot survives reboots, outages, certificate renewal, and library changes |
-| M-5 | A first join to a group of realistic size completes in an acceptable time, given the measured 4.72 items/second |
+| ID | Criterion | Needs | Notes |
+|---|---|---|---|
+| M-1 | Stock Jellyfin Web, Android, Android TV, iOS/Swiftfin, and Roku TV can browse, play, seek, switch subtitle and audio tracks, resume, and report progress on a remote source | Real devices; Web needs only a browser | **The largest untested assumption in the project.** Phase 0 proved the server relays bytes and ranges correctly, but that was measured with `curl`; no Jellyfin client has yet played a federated item. The Web half is testable today against hand-authored `.strm` files, without any Jellymesh code |
+| M-1a | A remote item plays, seeks, and resumes in Jellyfin Web | A browser session | Partial de-risk of M-1, available now |
+| M-2 | Public HTTPS works from an external network without Tailscale | A domain, DNS, a port forward, a certificate | |
+| M-2a | The node has a reachable public address at all | One minute of checking | Precondition for M-2. If the router's WAN address is inside `100.64.0.0/10` the ISP is using carrier-grade NAT, port forwarding cannot work, and the no-Tailscale goal fails for that node. Worth establishing before Phase 5 rather than during it |
+| M-3 | Backup, restore, and rollback drills succeed, including compromise recovery by re-enrollment | Nothing external; waiting on C-ST-7 | Not hardware-blocked. Previously worded as a key-rotation drill, which no longer exists after the decision in design-spec.md section 8 |
+| M-4 | A multi-home pilot survives reboots, outages, certificate renewal, and library changes | A second household willing to run alpha software, over weeks | The genuine long pole. Cannot be simulated: the failures it finds only appear over time |
+| M-5 | A first join to a group of realistic size completes in an acceptable time | A real catalog size | Half-measured: the rate is 4.72 items/second (phase-0-results.md section 4); only the item count is missing |
