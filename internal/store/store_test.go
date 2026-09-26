@@ -289,8 +289,8 @@ func TestMigrationCarriesExistingBlocksForward(t *testing.T) {
 	if version, _ := database.SchemaVersion(context.Background()); version != len(migrations) {
 		t.Fatalf("schema version = %d, want %d", version, len(migrations))
 	}
-	if NewPeerRepository(database).IsTrusted("fingerprint-maple") {
-		t.Fatal("a peer blocked before the migration must stay blocked after it")
+	if blocked, err := NewPeerRepository(database).IsBlocked(context.Background(), "maple"); err != nil || !blocked {
+		t.Fatalf("a peer blocked before the migration must stay blocked after it: %v, %v", blocked, err)
 	}
 }
 

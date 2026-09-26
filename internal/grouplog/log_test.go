@@ -620,3 +620,33 @@ func TestEverySignedFieldIsCovered(t *testing.T) {
 		}
 	}
 }
+
+// C-PO-9: events, proposals, and attestations are signed under distinct
+// domain tags, so a signature made for one can never verify as another, and
+// none can collide with the node key's other use in mutual TLS.
+func TestSignaturesAreDomainSeparated(t *testing.T) {
+	f := newFixture(t)
+	event := f.log.EventsAfter(0)[1]
+	proposal := f.proposal(t, "cedar", KindEjection, MemberBody{MemberID: "spruce"})
+	attestation := f.attest(t, "cedar", f.log.State())
+
+	domains := map[string][]byte{
+		eventDomain:       event.signingBytes(),
+		proposalDomain:    proposal.signingBytes(),
+		attestationDomain: attestation.signingBytes(),
+	}
+	if len(domains) != 3 {
+		t.Fatal("the three domain tags must differ")
+	}
+	for domain, signed := range domains {
+		if string(signed[:len(domain)]) != domain {
+			t.Fatalf("signed bytes do not begin with their domain tag %q", domain)
+		}
+	}
+	// A proposal's signature presented as an event's does not verify.
+	forged := event
+	forged.Signature = proposal.Signature
+	if forged.verify(f.identities["cedar"].PublicKey()) == nil {
+		t.Fatal("a proposal signature must not verify as an event signature")
+	}
+}

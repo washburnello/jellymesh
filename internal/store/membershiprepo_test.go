@@ -53,7 +53,6 @@ func admitMember(t *testing.T, state *policy.State, nodeID string) {
 // invitations spanning every status.
 func buildFullyPopulatedState(t *testing.T, database *DB) *policy.State {
 	t.Helper()
-	ctx := context.Background()
 
 	state, err := policy.NewState("group-1", "cedar")
 	if err != nil {
@@ -98,17 +97,6 @@ func buildFullyPopulatedState(t *testing.T, database *DB) *policy.State {
 		t.Fatalf("opt out of walnut/movies: %v", err)
 	}
 
-	// A block is a pairwise decision about a peer this node has actually
-	// seen, so a real peers row has to exist before it can be persisted.
-	if err := NewPeerRepository(database).Upsert(ctx, Peer{
-		NodeID:      "walnut",
-		Fingerprint: "fingerprint-walnut",
-		Trusted:     true,
-		CreatedAt:   time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-		UpdatedAt:   time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-	}); err != nil {
-		t.Fatalf("seed walnut peer record: %v", err)
-	}
 	if err := state.BlockPeer("walnut"); err != nil {
 		t.Fatalf("block walnut: %v", err)
 	}
@@ -516,9 +504,7 @@ func TestMembershipSaveDoesNotLiftABlock(t *testing.T) {
 	ctx := context.Background()
 	peers := NewPeerRepository(database)
 
-	peer := samplePeer("maple", "fingerprint-maple")
-	peer.Trusted = true
-	if err := peers.Upsert(ctx, peer); err != nil {
+	if err := peers.Upsert(ctx, samplePeer("maple", "fingerprint-maple")); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
 	if err := peers.SetBlocked(ctx, "maple", true); err != nil {
@@ -533,8 +519,8 @@ func TestMembershipSaveDoesNotLiftABlock(t *testing.T) {
 	if err := NewMembershipRepository(database).Save(ctx, state); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	if peers.IsTrusted(peer.Fingerprint) {
-		t.Fatal("an unrelated membership save lifted a block and restored transport trust")
+	if blocked, _ := peers.IsBlocked(ctx, "maple"); !blocked {
+		t.Fatal("an unrelated membership save lifted a block")
 	}
 
 	loaded, _, err := NewMembershipRepository(database).Load(ctx, "group-1")

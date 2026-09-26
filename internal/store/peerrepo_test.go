@@ -2,14 +2,7 @@ package store
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
-	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"errors"
-	"math/big"
-	"net"
 	"path/filepath"
 	"testing"
 	"time"
@@ -25,7 +18,6 @@ func samplePeer(nodeID string, fingerprint transport.Fingerprint) Peer {
 		Fingerprint:    fingerprint,
 		FriendlyName:   "Cedar's Server",
 		PublicHostname: "cedar.example.com",
-		Trusted:        true,
 		Blocked:        false,
 		CreatedAt:      created,
 		UpdatedAt:      updated,
@@ -119,14 +111,13 @@ func TestFingerprintCollisionBetweenTwoNodesIsRejected(t *testing.T) {
 }
 
 // C-TR-7: there is no key rotation, so a known node cannot be re-keyed in
-// place. Doing so would carry the old key's trust over to the new key.
+// place in the directory either.
 func TestUpsertRefusesToChangeAKnownNodesFingerprint(t *testing.T) {
 	database := openTestDB(t)
 	repo := NewPeerRepository(database)
 	ctx := context.Background()
 
 	peer := samplePeer("cedar", "fingerprint-one")
-	peer.Trusted = true
 	if err := repo.Upsert(ctx, peer); err != nil {
 		t.Fatalf("first upsert: %v", err)
 	}
@@ -134,41 +125,35 @@ func TestUpsertRefusesToChangeAKnownNodesFingerprint(t *testing.T) {
 	if err := repo.Upsert(ctx, peer); !errors.Is(err, ErrFingerprintChanged) {
 		t.Fatalf("re-keying upsert: error = %v, want ErrFingerprintChanged", err)
 	}
-	if repo.IsTrusted("fingerprint-two") {
-		t.Fatal("a refused re-key must not trust the new key")
-	}
-	if !repo.IsTrusted("fingerprint-one") {
-		t.Fatal("a refused re-key must leave the existing record untouched")
+	got, _, err := repo.ByNodeID(ctx, "cedar")
+	if err != nil || got.Fingerprint != "fingerprint-one" {
+		t.Fatalf("a refused re-key must leave the record untouched: %+v, %v", got, err)
 	}
 
-	// Re-enrollment is explicit: remove the old record, then enroll the new
-	// key as an untrusted peer awaiting a fresh decision.
+	// Re-enrollment is explicit: remove the old record, then record the new key.
 	if err := repo.Remove(ctx, "cedar"); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
-	peer.Trusted = false
 	if err := repo.Upsert(ctx, peer); err != nil {
-		t.Fatalf("enroll new key after removal: %v", err)
-	}
-	if repo.IsTrusted("fingerprint-two") {
-		t.Fatal("a re-enrolled key starts untrusted")
+		t.Fatalf("record new key after removal: %v", err)
 	}
 }
 
-// C-BL-5: updating a peer's descriptive fields changes neither its trust
-// decision nor its block.
-func TestUpsertOfAKnownPeerDoesNotChangeTrustOrBlock(t *testing.T) {
+// C-BL-5: updating a peer's descriptive fields never lifts its block.
+func TestUpsertOfAKnownPeerDoesNotLiftABlock(t *testing.T) {
 	database := openTestDB(t)
 	repo := NewPeerRepository(database)
 	ctx := context.Background()
 
 	peer := samplePeer("cedar", "fingerprint-cedar")
-	peer.Trusted = false
 	if err := repo.Upsert(ctx, peer); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	peer.Trusted = true
+	if err := repo.SetBlocked(ctx, "cedar", true); err != nil {
+		t.Fatalf("set blocked: %v", err)
+	}
 	peer.FriendlyName = "Renamed"
+	peer.Blocked = false
 	if err := repo.Upsert(ctx, peer); err != nil {
 		t.Fatalf("update: %v", err)
 	}
@@ -176,30 +161,16 @@ func TestUpsertOfAKnownPeerDoesNotChangeTrustOrBlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("by node id: %v", err)
 	}
-	if got.Trusted {
-		t.Fatal("an upsert must not re-trust a peer; that is SetTrusted's job")
-	}
 	if got.FriendlyName != "Renamed" {
 		t.Fatalf("friendly name = %q, want Renamed", got.FriendlyName)
 	}
-
-	if err := repo.SetTrusted(ctx, "cedar", true); err != nil {
-		t.Fatalf("set trusted: %v", err)
-	}
-	if err := repo.SetBlocked(ctx, "cedar", true); err != nil {
-		t.Fatalf("set blocked: %v", err)
-	}
-	peer.Blocked = false
-	if err := repo.Upsert(ctx, peer); err != nil {
-		t.Fatalf("update: %v", err)
-	}
-	if repo.IsTrusted(peer.Fingerprint) {
+	if !got.Blocked {
 		t.Fatal("an upsert must not lift a block")
 	}
 }
 
-// C-PO-12: a block is durable for a node that has never connected, and it
-// applies when that node later appears.
+// C-PO-12: a block is durable for a node that has never connected, applies
+// once it appears, and outlives its directory entry.
 func TestBlockOfAnUnseenPeerIsDurableAndApplies(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state", "jellymesh.db")
 	database, err := Open(path)
@@ -218,17 +189,13 @@ func TestBlockOfAnUnseenPeerIsDurableAndApplies(t *testing.T) {
 	}
 	defer database.Close()
 	repo := NewPeerRepository(database)
-	blocked, err := repo.IsBlocked(ctx, "stranger")
-	if err != nil || !blocked {
+	if blocked, err := repo.IsBlocked(ctx, "stranger"); err != nil || !blocked {
 		t.Fatalf("block did not survive restart: blocked=%v err=%v", blocked, err)
 	}
-
-	peer := samplePeer("stranger", "fingerprint-stranger")
-	peer.Trusted = true
-	if err := repo.Upsert(ctx, peer); err != nil {
+	if err := repo.Upsert(ctx, samplePeer("stranger", "fingerprint-stranger")); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	if repo.IsTrusted(peer.Fingerprint) {
+	if got, _, _ := repo.ByNodeID(ctx, "stranger"); !got.Blocked {
 		t.Fatal("a block recorded before first contact must apply once the peer appears")
 	}
 	if err := repo.Remove(ctx, "stranger"); err != nil {
@@ -239,120 +206,28 @@ func TestBlockOfAnUnseenPeerIsDurableAndApplies(t *testing.T) {
 	}
 }
 
-func TestBlockedPeerIsNotTrustedEvenWhenTrustedFlagIsTrue(t *testing.T) {
+func TestSetBlockedAndRemove(t *testing.T) {
 	database := openTestDB(t)
 	repo := NewPeerRepository(database)
 	ctx := context.Background()
 
-	peer := samplePeer("cedar", "fingerprint-cedar")
-	peer.Trusted = true
-	if err := repo.Upsert(ctx, peer); err != nil {
+	if err := repo.Upsert(ctx, samplePeer("cedar", "fingerprint-cedar")); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
 	if err := repo.SetBlocked(ctx, "cedar", true); err != nil {
 		t.Fatalf("set blocked: %v", err)
 	}
-
-	if repo.IsTrusted(peer.Fingerprint) {
-		t.Fatal("a blocked peer must never be trusted, even with trusted=true")
-	}
-}
-
-func TestTrustedUnblockedPeerIsTrusted(t *testing.T) {
-	database := openTestDB(t)
-	repo := NewPeerRepository(database)
-	ctx := context.Background()
-
-	peer := samplePeer("cedar", "fingerprint-cedar")
-	peer.Trusted = true
-	peer.Blocked = false
-	if err := repo.Upsert(ctx, peer); err != nil {
-		t.Fatalf("upsert: %v", err)
-	}
-	if !repo.IsTrusted(peer.Fingerprint) {
-		t.Fatal("a trusted, unblocked peer should be trusted")
-	}
-}
-
-func TestEmptyFingerprintIsNeverTrusted(t *testing.T) {
-	database := openTestDB(t)
-	repo := NewPeerRepository(database)
-	if repo.IsTrusted("") {
-		t.Fatal("an empty fingerprint must never be trusted")
-	}
-}
-
-func TestUnknownFingerprintIsNotTrusted(t *testing.T) {
-	database := openTestDB(t)
-	repo := NewPeerRepository(database)
-	if repo.IsTrusted("never-seen") {
-		t.Fatal("an unrecorded fingerprint must not be trusted")
-	}
-}
-
-func TestIsTrustedFailsClosedWhenDatabaseIsClosed(t *testing.T) {
-	database := openTestDB(t)
-	repo := NewPeerRepository(database)
-	ctx := context.Background()
-
-	peer := samplePeer("cedar", "fingerprint-cedar")
-	peer.Trusted = true
-	if err := repo.Upsert(ctx, peer); err != nil {
-		t.Fatalf("upsert: %v", err)
-	}
-	if !repo.IsTrusted(peer.Fingerprint) {
-		t.Fatal("expected the peer to be trusted before closing the database")
-	}
-
-	if err := database.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
-
-	// Must fail closed rather than panic once the database is unusable.
-	if repo.IsTrusted(peer.Fingerprint) {
-		t.Fatal("IsTrusted must return false, not true, once the database is closed")
-	}
-}
-
-func TestSetTrustedSetBlockedAndRemove(t *testing.T) {
-	database := openTestDB(t)
-	repo := NewPeerRepository(database)
-	ctx := context.Background()
-
-	peer := samplePeer("cedar", "fingerprint-cedar")
-	peer.Trusted = false
-	peer.Blocked = false
-	if err := repo.Upsert(ctx, peer); err != nil {
-		t.Fatalf("upsert: %v", err)
-	}
-
-	if err := repo.SetTrusted(ctx, "cedar", true); err != nil {
-		t.Fatalf("set trusted: %v", err)
-	}
-	got, _, _ := repo.ByNodeID(ctx, "cedar")
-	if !got.Trusted {
-		t.Fatal("expected trusted to be set")
-	}
-
-	if err := repo.SetBlocked(ctx, "cedar", true); err != nil {
-		t.Fatalf("set blocked: %v", err)
-	}
-	got, _, _ = repo.ByNodeID(ctx, "cedar")
-	if !got.Blocked {
-		t.Fatal("expected blocked to be set")
-	}
-	if repo.IsTrusted(peer.Fingerprint) {
-		t.Fatal("blocking a trusted peer must revoke transport trust immediately")
-	}
-
-	if err := repo.SetTrusted(ctx, "missing", true); !errors.Is(err, ErrPeerNotFound) {
-		t.Fatalf("set trusted on missing node: error = %v, want ErrPeerNotFound", err)
+	if blocked, _ := repo.IsBlocked(ctx, "cedar"); !blocked {
+		t.Fatal("expected blocked")
 	}
 	if err := repo.SetBlocked(ctx, "cedar", false); err != nil {
 		t.Fatalf("unblock: %v", err)
 	}
-	if !repo.IsTrusted(peer.Fingerprint) {
-		t.Fatal("unblocking should restore the existing trust decision")
+	if blocked, _ := repo.IsBlocked(ctx, "cedar"); blocked {
+		t.Fatal("expected unblocked")
+	}
+	if err := repo.SetBlocked(ctx, "  ", true); !errors.Is(err, ErrNodeIDRequired) {
+		t.Fatalf("blank node: error = %v, want ErrNodeIDRequired", err)
 	}
 
 	if err := repo.Remove(ctx, "cedar"); err != nil {
@@ -387,162 +262,5 @@ func TestPeerListReturnsAllPeers(t *testing.T) {
 	}
 	if peers[0].NodeID != "cedar" || peers[1].NodeID != "walnut" {
 		t.Fatalf("unexpected peers: %+v", peers)
-	}
-}
-
-// --- Mutual TLS integration: PeerRepository as transport.TrustStore ---
-
-// generateTestCertificate mints a throwaway self-signed Ed25519 certificate,
-// mirroring internal/transport's own test helper, so this test proves the
-// two packages fit together using only the public API each exposes.
-func generateTestCertificate(t *testing.T, commonName string) (tls.Certificate, transport.Fingerprint) {
-	t.Helper()
-	public, private, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("generate key: %v", err)
-	}
-	template := &x509.Certificate{
-		SerialNumber:          big.NewInt(1),
-		Subject:               pkix.Name{CommonName: commonName},
-		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(time.Hour),
-		KeyUsage:              x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
-	}
-	der, err := x509.CreateCertificate(rand.Reader, template, template, public, private)
-	if err != nil {
-		t.Fatalf("create certificate: %v", err)
-	}
-	leaf, err := x509.ParseCertificate(der)
-	if err != nil {
-		t.Fatalf("parse certificate: %v", err)
-	}
-	fingerprint, err := transport.FingerprintOfCertificate(leaf)
-	if err != nil {
-		t.Fatalf("fingerprint certificate: %v", err)
-	}
-	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: private, Leaf: leaf}, fingerprint
-}
-
-// TestPeerRepositoryAsTrustStorePerformsRealHandshake proves the durable
-// PeerRepository actually satisfies transport.TrustStore end to end: a real
-// mutual-TLS handshake over a loopback listener, authorized purely from a
-// row this test wrote into SQLite.
-func TestPeerRepositoryAsTrustStorePerformsRealHandshake(t *testing.T) {
-	database := openTestDB(t)
-	repo := NewPeerRepository(database)
-	ctx := context.Background()
-
-	serverCertificate, serverFingerprint := generateTestCertificate(t, "server-node")
-	clientCertificate, clientFingerprint := generateTestCertificate(t, "client-node")
-
-	// The server's trust store is the durable repository: only a peer with a
-	// row that is trusted and not blocked may complete the handshake.
-	if err := repo.Upsert(ctx, Peer{
-		NodeID:      "client-node",
-		Fingerprint: clientFingerprint,
-		Trusted:     true,
-	}); err != nil {
-		t.Fatalf("upsert client peer: %v", err)
-	}
-
-	clientTrust := transport.NewMemoryTrustStore(serverFingerprint)
-	serverConfig := transport.ServerTLSConfig(serverCertificate, repo)
-	clientConfig := transport.ClientTLSConfig(clientCertificate, serverFingerprint, clientTrust)
-
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	defer listener.Close()
-
-	type result struct {
-		conn *tls.Conn
-		err  error
-	}
-	serverResults := make(chan result, 1)
-	go func() {
-		rawConn, err := listener.Accept()
-		if err != nil {
-			serverResults <- result{nil, err}
-			return
-		}
-		serverConn := tls.Server(rawConn, serverConfig)
-		err = serverConn.HandshakeContext(context.Background())
-		serverResults <- result{serverConn, err}
-	}()
-
-	rawConn, err := net.Dial("tcp", listener.Addr().String())
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	clientConn := tls.Client(rawConn, clientConfig)
-	defer clientConn.Close()
-	if err := clientConn.HandshakeContext(context.Background()); err != nil {
-		t.Fatalf("client handshake: %v", err)
-	}
-
-	select {
-	case serverResult := <-serverResults:
-		if serverResult.conn != nil {
-			defer serverResult.conn.Close()
-		}
-		if serverResult.err != nil {
-			t.Fatalf("server handshake against a durable trust store: %v", serverResult.err)
-		}
-		peer, err := transport.PeerFingerprint(serverResult.conn.ConnectionState())
-		if err != nil {
-			t.Fatalf("peer fingerprint: %v", err)
-		}
-		if peer != clientFingerprint {
-			t.Fatalf("server saw peer %q, want %q", peer, clientFingerprint)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for server handshake")
-	}
-
-	// Now block the peer and confirm a fresh handshake is refused, proving
-	// IsTrusted's fail-closed block semantics reach all the way through TLS.
-	if err := repo.SetBlocked(ctx, "client-node", true); err != nil {
-		t.Fatalf("set blocked: %v", err)
-	}
-
-	listener2, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	defer listener2.Close()
-
-	blockedResults := make(chan result, 1)
-	go func() {
-		rawConn, err := listener2.Accept()
-		if err != nil {
-			blockedResults <- result{nil, err}
-			return
-		}
-		serverConn := tls.Server(rawConn, serverConfig)
-		err = serverConn.HandshakeContext(context.Background())
-		blockedResults <- result{serverConn, err}
-	}()
-
-	rawConn2, err := net.Dial("tcp", listener2.Addr().String())
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	blockedClientConn := tls.Client(rawConn2, clientConfig)
-	defer blockedClientConn.Close()
-	_ = blockedClientConn.HandshakeContext(context.Background())
-
-	select {
-	case blockedResult := <-blockedResults:
-		if blockedResult.conn != nil {
-			defer blockedResult.conn.Close()
-		}
-		if !errors.Is(blockedResult.err, transport.ErrUntrustedPeer) {
-			t.Fatalf("server error after block = %v, want ErrUntrustedPeer", blockedResult.err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for server handshake")
 	}
 }

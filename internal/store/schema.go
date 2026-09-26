@@ -188,6 +188,13 @@ var migrations = []string{
 		detected_at  TEXT NOT NULL
 	);
 	`,
+
+	// 4: transport trust is derived from the group log's roster, so the
+	// separate trust flag goes. Keeping it would leave two answers to "may
+	// this key connect", which is how membership and trust drifted apart.
+	`
+	ALTER TABLE peers DROP COLUMN trusted;
+	`,
 }
 
 func (database *DB) migrate(ctx context.Context) error {

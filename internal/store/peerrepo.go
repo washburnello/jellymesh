@@ -33,15 +33,17 @@ var (
 	ErrPeerNotFound = errors.New("peer not found")
 )
 
-// Peer is the durable record of a pairwise relationship with another
-// Jellymesh node: the key that identifies it, whether this node has decided
-// to trust it, and whether it has been pairwise blocked.
+// Peer is this node's directory entry for another Jellymesh node: the key
+// that identifies it, how to reach it, and whether it is blocked.
+//
+// A peer record is not an authorization. Transport trust is derived from the
+// group log's roster (see internal/membership), so a directory entry can
+// neither grant nor retain access.
 type Peer struct {
 	NodeID         string
 	Fingerprint    transport.Fingerprint
 	FriendlyName   string
 	PublicHostname string
-	Trusted        bool
 	// Blocked is read-only: it is reported by lookups and ignored by Upsert.
 	// Blocks live in their own table and change only through SetBlocked.
 	Blocked   bool
@@ -49,10 +51,9 @@ type Peer struct {
 	UpdatedAt time.Time
 }
 
-// PeerRepository is the durable store of peer trust decisions. It backs
-// transport.TrustStore so that the mutual-TLS layer authorizes connections
-// directly against what this node has actually decided, rather than against
-// a copy of it kept in memory.
+// PeerRepository is this node's peer directory and its record of local
+// blocks. Blocks are the one security decision it holds, and they only ever
+// remove access.
 type PeerRepository struct {
 	database *DB
 }
@@ -64,12 +65,10 @@ func NewPeerRepository(database *DB) *PeerRepository {
 
 // Upsert records peer, keyed by node_id.
 //
-// Creating a peer records every field given, including its initial trust
-// decision. Updating an existing peer changes only its descriptive fields
-// (friendly name, public hostname, updated_at). The security decisions are
-// deliberately not writable here: trust changes through SetTrusted and blocks
-// through SetBlocked, so that refreshing a peer's display name can never
-// quietly re-trust an ejected node or lift a block.
+// Creating a peer records every field given. Updating an existing peer
+// changes only its descriptive fields (friendly name, public hostname,
+// updated_at). Blocks are deliberately not writable here: they change only
+// through SetBlocked, so refreshing a peer's display name can never lift one.
 //
 // node_id is the identity and fingerprint must stay unique. A fingerprint that
 // already belongs to a different node is ErrFingerprintInUse, and a different
@@ -122,10 +121,10 @@ func (repo *PeerRepository) Upsert(ctx context.Context, peer Peer) error {
 		}
 
 		_, err = tx.ExecContext(ctx, `
-			INSERT INTO peers(node_id, fingerprint, friendly_name, public_hostname, trusted, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			INSERT INTO peers(node_id, fingerprint, friendly_name, public_hostname, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?)`,
 			nodeID, string(peer.Fingerprint), peer.FriendlyName, peer.PublicHostname,
-			boolToInt(peer.Trusted), FormatTime(peer.CreatedAt), FormatTime(peer.UpdatedAt),
+			FormatTime(peer.CreatedAt), FormatTime(peer.UpdatedAt),
 		)
 		if err != nil {
 			return fmt.Errorf("insert peer: %w", err)
@@ -169,24 +168,9 @@ func (repo *PeerRepository) List(ctx context.Context) ([]Peer, error) {
 	return peers, nil
 }
 
-// SetTrusted updates whether this node has decided to trust nodeID.
-func (repo *PeerRepository) SetTrusted(ctx context.Context, nodeID string, trusted bool) error {
-	nodeID = strings.TrimSpace(nodeID)
-	if nodeID == "" {
-		return ErrNodeIDRequired
-	}
-	result, err := repo.database.SQL().ExecContext(ctx,
-		`UPDATE peers SET trusted = ?, updated_at = ? WHERE node_id = ?`,
-		boolToInt(trusted), FormatTime(nowUTC()), nodeID,
-	)
-	if err != nil {
-		return fmt.Errorf("update peer trust: %w", err)
-	}
-	return requireRowAffected(result)
-}
-
 // SetBlocked records or lifts a pairwise block on nodeID. A block is a media
-// cut, independent of the trust decision: see IsTrusted.
+// cut: a blocked member fails the transport trust check even though it
+// remains in the roster.
 //
 // It is keyed by node ID and needs no peer record, so a node can be blocked
 // before it has ever connected (C-PO-12), and removing a peer record does not
@@ -237,47 +221,7 @@ func (repo *PeerRepository) Remove(ctx context.Context, nodeID string) error {
 	return requireRowAffected(result)
 }
 
-// isTrustedQueryTimeout bounds how long IsTrusted will wait on the database.
-// IsTrusted sits on the hot path for every inbound connection (see the
-// comment on idx_peers_fingerprint in schema.go) and its signature has no
-// error return, so a wedged database must not be able to hang a handshake
-// forever; it must fail closed promptly instead.
-const isTrustedQueryTimeout = 2 * time.Second
-
-// IsTrusted satisfies transport.TrustStore. It fails closed: an empty
-// fingerprint, an unknown fingerprint, a blocked peer, or any database error
-// (including a closed or wedged database) all result in false. There is no
-// error return to forget to check, precisely because this sits on an
-// authorization path.
-//
-// A blocked peer is never trusted, even if trusted is set: a block is a
-// pairwise media cut, and an authorized-but-blocked peer must not be allowed
-// to pass the transport check regardless of the trust flag's value.
-func (repo *PeerRepository) IsTrusted(fingerprint transport.Fingerprint) bool {
-	if fingerprint == "" {
-		return false
-	}
-	if repo == nil || repo.database == nil || repo.database.SQL() == nil {
-		return false
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), isTrustedQueryTimeout)
-	defer cancel()
-
-	var trusted, blocked int
-	err := repo.database.SQL().QueryRowContext(ctx,
-		`SELECT p.trusted, EXISTS(SELECT 1 FROM blocks b WHERE b.node_id = p.node_id)
-		 FROM peers p WHERE p.fingerprint = ?`, string(fingerprint),
-	).Scan(&trusted, &blocked)
-	if err != nil {
-		// Includes sql.ErrNoRows (unknown fingerprint) and any I/O or driver
-		// failure (closed database, disk error, timeout): all fail closed.
-		return false
-	}
-	return trusted != 0 && blocked == 0
-}
-
-const peerSelectColumns = `SELECT node_id, fingerprint, friendly_name, public_hostname, trusted,
+const peerSelectColumns = `SELECT node_id, fingerprint, friendly_name, public_hostname,
 	EXISTS(SELECT 1 FROM blocks WHERE blocks.node_id = peers.node_id), created_at, updated_at`
 
 // rowScanner is satisfied by both *sql.Row and *sql.Rows, letting a single
@@ -297,15 +241,14 @@ func scanPeerRow(row rowScanner) (Peer, error) {
 	var (
 		peer                       Peer
 		fingerprint                string
-		trusted, blocked           int
+		blocked                    int
 		createdAtRaw, updatedAtRaw string
 	)
 	if err := row.Scan(&peer.NodeID, &fingerprint, &peer.FriendlyName, &peer.PublicHostname,
-		&trusted, &blocked, &createdAtRaw, &updatedAtRaw); err != nil {
+		&blocked, &createdAtRaw, &updatedAtRaw); err != nil {
 		return Peer{}, err
 	}
 	peer.Fingerprint = transport.Fingerprint(fingerprint)
-	peer.Trusted = trusted != 0
 	peer.Blocked = blocked != 0
 
 	createdAt, err := ParseTime(createdAtRaw)

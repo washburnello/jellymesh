@@ -46,18 +46,18 @@ findings in [plan-review.md](plan-review.md).
 | C-TR-4 | Two node identities may not share a fingerprint | `TestFingerprintCollisionBetweenTwoNodesIsRejected` | PASS |
 | C-TR-5 | Under TLS 1.3 a client handshake reports success even when the server rejects the client certificate, and the rejection surfaces on first I/O (library behaviour, pinned so the caution on `ClientTLSConfig` cannot silently become false) | `TestClientHandshakeMayReturnNilDespiteServerRejection` | PASS |
 | C-TR-8 | The dial path treats reachability and authorization separately, and does not consider a peer to have accepted this node until first I/O succeeds | none yet | PENDING — no dial path exists. Previously claimed PASS under C-TR-5 on the strength of a test that exercises only crypto/tls |
-| C-TR-6 | Peer authorization is durable and survives restart | `TestPeerRepositoryAsTrustStorePerformsRealHandshake` | PASS |
+| C-TR-6 | Peer authorization is durable and survives restart | `TestTrustSurvivesRestart` | PASS |
 | C-TR-7 | A known node's key cannot be replaced in place; a new key is a new peer that starts untrusted | `TestUpsertRefusesToChangeAKnownNodesFingerprint` | PASS |
 
 ## 4. Trust, blocking, and fail-closed behaviour
 
 | ID | Criterion | Verified by | Status |
 |---|---|---|---|
-| C-BL-1 | A blocked peer is not trusted even when its trust flag is set | `TestBlockedPeerIsNotTrustedEvenWhenTrustedFlagIsTrue` | PASS |
-| C-BL-2 | An empty fingerprint is never trusted | `TestEmptyFingerprintIsNeverTrusted` | PASS |
-| C-BL-3 | The trust check fails closed on any database error | `TestIsTrustedFailsClosedWhenDatabaseIsClosed` | PASS |
+| C-BL-1 | A blocked member is refused at the transport layer while remaining in the roster | `TestABlockedMemberIsRefused` | PASS |
+| C-BL-2 | An empty fingerprint, or a key outside the roster, is never trusted | `TestTrustFailsClosed`, `TestMembersAreTrustedAndOutsidersAreNot` | PASS |
+| C-BL-3 | The trust check fails closed on any database error, and a halted group trusts nobody | `TestTrustFailsClosed`, `TestAHaltedGroupTrustsNobody` | PASS |
 | C-BL-4 | A block is a pairwise media cut that leaves both nodes group members, and unblocking preserves explicit opt-outs | `TestBlockOverridesPublishedLibrary`, `TestUnblockPreservesOptOut` | PASS |
-| C-BL-5 | A block, and a trust decision, change only through their explicit setters; no peer update or membership save lifts a block or re-trusts a peer as a side effect | `TestUpsertOfAKnownPeerDoesNotChangeTrustOrBlock`, `TestMembershipSaveDoesNotLiftABlock`, `TestMigrationCarriesExistingBlocksForward` | PASS |
+| C-BL-5 | A block changes only through its explicit setter; no peer update or membership save lifts it as a side effect | `TestUpsertOfAKnownPeerDoesNotLiftABlock`, `TestMembershipSaveDoesNotLiftABlock`, `TestMigrationCarriesExistingBlocksForward` | PASS |
 
 ## 5. Membership, roles, and publication
 
@@ -66,25 +66,25 @@ findings in [plan-review.md](plan-review.md).
 | C-PO-1 | Every source library is private by default; nothing is published implicitly | `TestNonMemberCannotPublishIntoTheLivePool`, `TestPublishedLibraryIsAutoAccepted` | PASS |
 | C-PO-2 | A destination auto-accepts published libraries and can opt out of any exact source library | `TestDestinationCanOptOutAndOptBackIn`, `TestOptOutRequiresPublishedLibrary` | PASS |
 | C-PO-3 | An owner or any administrator may approve or deny a redeemed invitation; an ordinary member may not | `TestAnyMemberCanInviteButOnlyAdminsApprove`, `TestPromotedAdministratorCanApproveInvitations`, `TestAdministratorCanDenyInvitation` | PASS |
-| C-PO-4 | An administrator cannot eject another administrator or the owner, whether locally or through a signed revocation | `TestAdministratorCannotEjectAnotherAdministrator`, `TestOwnerCannotEjectItself`, `TestVerifiedRevocationCannotTargetOwner`, `TestVerifiedRevocationEnforcesAdministratorProtection`, `TestSignedRevocationOfAnAdministratorByAnAdministratorIsRefused` | PASS |
+| C-PO-4 | An administrator cannot eject another administrator or the owner, and receivers enforce this even on an owner-sequenced event | `TestAdministratorCannotEjectAnotherAdministrator`, `TestOwnerCannotEjectItself`, `TestVerifiedRevocationCannotTargetOwner`, `TestVerifiedRevocationEnforcesAdministratorProtection`, `TestReceiversReapplyTheRoleRules` | PASS |
 | C-PO-5 | Ejection removes future participation and purges the member's publications; rejoining requires a fresh invitation and approval | `TestOwnerCanEjectAndRequireFreshAdmissionToRejoin`, `TestVerifiedRevocationPropagatesEjection` | PASS |
 | C-PO-6 | A joining server must offer at least one non-empty library before admission, satisfiable before it is a member | `TestAdmissionRuleIsSatisfiedByStagedCandidates`, `TestMemberCannotStageCandidates` | PASS |
 | C-PO-7 | Owner succession is never applied on a local timer; a claim is accepted only from the eligible successor, after the deadline, with a quorum of distinct, eligible attestors | `TestSuccessionRequiresAQuorumOfAttestations`, `TestSuccessionRejectsManufacturedQuorum`, `TestOnlyTheEligibleSuccessorMayClaim`, `TestClaimBeforeTheDeadlineIsRejected` | PASS |
 | C-PO-14 | Each absence attestation is signed by its attestor and verified, so a claimant cannot author the quorum itself | `TestSuccessionRequiresSignedAttestationsFromAQuorum`, `TestEverySignedFieldIsCovered`, `TestAClaimMustContainEveryAttestedHead` | PARTIAL — enforced by `internal/grouplog`. The old path, `group.State.ClaimOwnership`, still accepts unsigned attestations until it is retired when the log is wired in |
 | C-PO-15 | A former owner that returns after a successful succession claim is fenced: old-epoch events beyond the claim's base are refused, and members that applied them truncate and replay | `TestSuccessionFencesTheFormerOwner` | PASS |
 | C-PO-8 | Membership, roles, publications, opt-outs, and invitations survive a restart, and behaviour after a reload matches behaviour before it | `TestMembershipRepositorySaveAndLoadRoundTrip`, `TestMembershipRepositorySaveUpdatesRatherThanDuplicating`, `TestMembershipRepositoryLoadUnknownGroupReturnsNotFound`, `TestMembershipRepositoryDelete`, `TestMembershipRepositoryListGroupIDs` | PASS |
-| C-PO-9 | Group events are signed, tamper-evident across every field, domain-separated by kind, and replay-guarded by sequence | `TestMutatingAnySingleFieldInvalidatesTheSignature`, `TestVerifyWithDifferentNodesPublicKeyFailsWithInvalidSignature`, `TestIssuerMismatchWhenSignerLiesAboutItsOwnIdentity`, `TestAdmissionSignatureCannotBePresentedAsRevocation`, `TestSequenceGuardRejectsReplayAndStaleAcceptsMonotonicIncrease` | PASS |
-| C-PO-10 | An event is applied only when its issuer is the owner or an administrator of that group, and the issuer's fingerprint matches the peer record; a correctly signed event from an ordinary member is refused | `TestCorrectlySignedEventFromOrdinaryMemberIsRefused`, `TestIssuerNameCannotBeBorrowedFromAnAdministrator`, `TestAdministratorMayIssueMembershipEvents`, `TestUnknownIssuerIsRefused` | PASS |
-| C-PO-11 | The replay guard is seeded from durable state on restart, so an already-superseded sequence cannot be re-admitted by a freshly started node | `TestReplayGuardIsSeededFromDurableSequence`, `TestSeedNeverLowersTheHighWaterMark` | PASS |
+| C-PO-9 | Group events, proposals, and attestations are signed, tamper-evident across every field, and domain-separated; a proposal applies once | `TestEverySignedFieldIsCovered`, `TestSignaturesAreDomainSeparated`, `TestAProposalAppliesOnce`, `TestReplayRefusesATamperedEvent` | PASS |
+| C-PO-10 | An event is applied only when its signer is the epoch's owner, verified with the key the roster holds, and its proposer holds the power it exercises; a correctly signed decision from an ordinary member is refused | `TestOnlyTheOwnerSequences`, `TestReceiversReapplyTheRoleRules`, `TestTheOwnerCannotFabricateAnAdministratorsDecision` | PASS |
+| C-PO-11 | Replay protection survives restart: an event already in the stored log, presented again, changes nothing | `TestAnOldEventReplayedAfterRestartChangesNothing`, `TestReceivingAnEventTwiceIsHarmless`, `TestGroupLogRepositoryRoundTrip` | PASS |
 | C-PO-12 | A block is persisted for a peer that has never connected, applies when it appears, and survives removal of its peer record | `TestBlockOfAnUnseenPeerIsDurableAndApplies` | PASS |
-| C-PO-13 | An event refused after verification does not consume its sequence number, and a payload's sequence must match its signed envelope's | `TestRefusedEventDoesNotConsumeItsSequence`, `TestPayloadSequenceMustMatchEnvelopeSequence`, `TestSequenceGuardCheckDoesNotRecord` | PASS |
+| C-PO-13 | A refused event leaves the log exactly as it was, so the legitimate event for that slot still applies | `TestReceiversReapplyTheRoleRules`, `TestAnEventMustExtendTheHeadByHash` | PASS |
 | C-PO-16 | A signed admission can be applied by every member, including ones that never saw the invitation, and binds the admitted node's key; a node ID never changes key and a key never moves to another node ID | `TestAdmissionAppliesFromTheLogAloneAndBindsTheKey`, `TestAdmissionNeverRebindsAKey`, `TestAnInvitationAdmitsOnce` | PASS |
 | C-PO-17 | Group events have one order across all members: only the epoch's owner sequences, each event extends the previous by hash, and an event that arrives ahead of the head is held until the gap fills, never dropped | `TestOnlyTheOwnerSequences`, `TestAnEventMustExtendTheHeadByHash`, `TestOutOfOrderEventsAreHeldAndApplied`, `TestReceivingAnEventTwiceIsHarmless` | PASS |
 | C-PO-21 | A node behind a peer's head fetches the missing range from that peer or any other member | none yet | PENDING — the replication protocol over mutual TLS |
 | C-PO-18 | An administrator's decision reaches the log only as a proposal it signed, embedded in an owner-sequenced event; receivers verify both signatures and re-apply the role rules | `TestTheOwnerCannotFabricateAnAdministratorsDecision`, `TestReceiversReapplyTheRoleRules`, `TestAProposalAppliesOnce` | PASS |
 | C-PO-19 | Two correctly signed events for the same epoch and sequence are detected as equivocation; the node stops applying past that point and keeps both as evidence, and no non-owner can trigger this | `TestEquivocationHaltsTheLogAndKeepsEvidence`, `TestAForgedConflictDoesNotHaltTheLog` | PASS |
 | C-PO-20 | Group state is a pure function of the log: replaying the same log from genesis on any node yields identical state, and a tampered or foreign log is refused | `TestReplayingTheSameLogYieldsIdenticalState`, `TestReplayRefusesATamperedEvent`, `TestReplayAnchoredRefusesADifferentGroup`, `TestEventsSurviveTheWireEncoding` | PASS |
-| C-TR-9 | Transport trust is derived from the replicated roster and local blocks, so admission and ejection change trust on every node with no separate trust write | none yet | PENDING — design: A-5. Replaces the `peers.trusted` write in `membership.Applier` |
+| C-TR-9 | Transport trust is derived from the replicated roster and local blocks, so admission and ejection change trust on every node with no separate trust write | `TestMembersAreTrustedAndOutsidersAreNot`, `TestEjectionRevokesTrustOnEveryNode` | PASS |
 
 ## 6. Durable state
 
@@ -134,7 +134,7 @@ behind them. They are listed so that the gap is explicit rather than implied.
 | C-PB-3 | A source enforces a bandwidth ceiling per destination | PENDING — see assumption A-1 |
 | C-OP-1 | Audit events are recorded with secrets redacted | PENDING — the table exists, nothing writes to it |
 | C-OP-2 | Compromise recovery is by re-enrollment: a fresh key is a distinct peer, and readmission requires a new invitation and fresh approval | DECIDED — see design-spec.md section 8. The mechanism it relies on is covered by C-ID-3, C-TR-4, C-TR-7 and C-PO-5; what remains is C-OP-3 and an operator runbook |
-| C-OP-3 | Ejecting or revoking a member also revokes trust at the transport layer, so a compromised key cannot complete a handshake | `TestEjectionRevokesTransportTrust`, `TestEjectionByANonAdministratorChangesNothing`, `TestAdministratorMayIssueMembershipEvents` | PASS |
+| C-OP-3 | Ejecting a member also revokes its transport trust on every node that applies the ejection, so a compromised key cannot complete a handshake; an ejection by a non-administrator changes nothing | `TestEjectionRevokesTrustOnEveryNode`, `TestReceiversReapplyTheRoleRules` | PASS |
 | C-OP-4 | An operator runbook documents the compromise-recovery sequence | PENDING |
 
 ## 9. Recorded assumptions
