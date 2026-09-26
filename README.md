@@ -1,11 +1,39 @@
 # Jellymesh
 
-Jellymesh is a planned federation layer for independent Jellyfin servers. Each home server can publish selected libraries to approved peer servers while continuing to use ordinary Jellyfin clients and local Jellyfin user accounts.
+Jellymesh is a federation layer for independent Jellyfin servers, under development. Each home server can publish selected libraries to approved peer servers while continuing to use ordinary Jellyfin clients and local Jellyfin user accounts.
 
 ## Current status
 
-- Planning and feasibility phase.
-- Next implementation target: a two-node vertical slice covering invite/approval, one published library, catalog materialization, playback, and health sync.
+- Phase 0 (feasibility) is complete; see [Phase 0 results](docs/phase-0-results.md).
+- Phase 1 (node foundation) is implemented. A node runs as a single container, forms a group with other nodes, admits new ones by invitation, keeps the replicated group log in step, derives transport trust from it, audits what it does, and backs itself up. Media sharing is not implemented yet: catalog sync, materialization, and the relay are Phases 2 and 3.
+- Progress is measured against [docs/conformance.md](docs/conformance.md); run `./scripts/verify.sh`.
+
+## Running a node
+
+```bash
+docker compose -f deploy/docker-compose.yml up -d --build
+docker compose -f deploy/docker-compose.yml exec jellymesh /jellymesh status
+```
+
+Found a group on one node, invite another, and approve it:
+
+```bash
+# On the founding node
+jellymesh found family-and-friends
+jellymesh invite                      # prints a short code, its address, and a QR payload
+
+# On the joining node
+jellymesh join -address cedar.example.org:8443 -code XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-XXXX \
+               -library movies:Movies:movies
+
+# On the owner's or any administrator's node
+jellymesh requests
+jellymesh approve <inviter-id> <invitation-id>
+```
+
+In a container deployment, prefix each command with `docker compose exec jellymesh /jellymesh` in place of `jellymesh`. The admin API listens on loopback only.
+
+## Background
 - Cedar was inspected read-only and runs Jellyfin 10.11.11.0 in a host-network Docker container.
 - Walnut has Docker and Docker Compose available but no Jellyfin deployment.
 - No production server, account, library, or media has been modified.

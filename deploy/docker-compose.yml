@@ -1,0 +1,30 @@
+# Example deployment of a Jellymesh node beside an existing Jellyfin server.
+#
+# Only the federation port is published. The admin API listens on loopback
+# inside the container and is reached with the CLI through docker exec:
+#
+#   docker compose exec jellymesh /jellymesh status
+#   docker compose exec jellymesh /jellymesh found family-and-friends
+#   docker compose exec jellymesh /jellymesh invite
+#
+# The data volume holds the node's private key, its database, and the admin
+# token. Back it up with `jellymesh backup`, not by copying it while running.
+services:
+  jellymesh:
+    image: jellymesh:dev
+    build: ..
+    restart: unless-stopped
+    ports:
+      - "8443:8443"
+    volumes:
+      # A named volume starts out owned by the image's non-root user. A bind
+      # mount instead must be owned by uid 65532, mode 0700.
+      - jellymesh-data:/data
+    environment:
+      # How peers reach this node: its public name, and the forwarded port if
+      # it differs from 8443.
+      JELLYMESH_PUBLIC_HOSTNAME: "cedar.example.org"
+      JELLYMESH_NODE_NAME: "Cedar"
+
+volumes:
+  jellymesh-data:

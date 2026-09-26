@@ -1,0 +1,9 @@
+.git
+.claude
+.omavroom
+lab
+docs
+*.db
+*.key
+*.pem
+*.crt
