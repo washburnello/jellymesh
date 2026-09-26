@@ -88,6 +88,17 @@ findings in [plan-review.md](plan-review.md).
 | C-PO-20 | Group state is a pure function of the log: replaying the same log from genesis on any node yields identical state, and a tampered or foreign log is refused | `TestReplayingTheSameLogYieldsIdenticalState`, `TestReplayRefusesATamperedEvent`, `TestReplayAnchoredRefusesADifferentGroup`, `TestEventsSurviveTheWireEncoding` | PASS |
 | C-TR-9 | Transport trust is derived from the replicated roster and local blocks, so admission and ejection change trust on every node with no separate trust write | `TestMembersAreTrustedAndOutsidersAreNot`, `TestEjectionRevokesTrustOnEveryNode` | PASS |
 
+### Enrollment
+
+| ID | Criterion | Verified by | Status |
+|---|---|---|---|
+| C-EN-1 | A node joins end to end by short code or QR code: it redeems at the inviter, an administrator on another node approves, the owner sequences, and the node downloads a log anchored to the genesis and refuses, without storing it, a log that does not admit its own key | `TestANodeJoinsWithAShortCode`, `TestANodeJoinsWithAQRCode`, `TestJoinBeforeAdmissionFails`, `TestJoinRefusesALogThatDoesNotAdmitThisNode` | PASS |
+| C-EN-2 | The admission binds the key the invitee presented in TLS when it redeemed; a request body cannot name a key, and an approver refuses a request whose key does not match its fingerprint | `TestTheRedeemingKeyIsTheOneAdmitted`, `TestRedemptionRecordsTheKeyTheInviteePresented` | PASS |
+| C-EN-3 | The joining node authenticates the inviter before sending the secret: exactly by a QR code's fingerprint, or by a short code's 80-bit prefix; an impostor never receives the secret, and an inviter reporting a group other than the QR code's is refused | `TestAnImpostorNeverReceivesTheSecret`, `TestAQRInvitationForADifferentGroupIsRefused`, `TestShortCodeRoundTrip`, `TestQRRoundTrip`, `TestMalformedCodesAreRefused` | PASS |
+| C-EN-4 | Wrong, used, and expired secrets are answered identically, redemption failures are rate-limited across all clients, and a secret redeems once | `TestFailedRedemptionsAreIndistinguishableAndRateLimited` | PASS |
+| C-EN-5 | Only an owner or administrator can list or deny pending requests, and a denied invitee learns it and cannot download the log | `TestOnlyAdministratorsSeeAndDenyRequests` | PASS |
+| C-EN-6 | On the federation listener a key outside every roster reaches only the enrollment routes; a member route without its own check is still private, and a public route outside the enrollment prefix is unreachable | `TestOnlyThePublicPrefixIsReachableByANonMember`, `TestANonMemberReachesOnlyEnrollment` | PASS |
+
 ## 6. Durable state
 
 | ID | Criterion | Verified by | Status |
@@ -177,6 +188,22 @@ through the Jellyfin merge API. Rationale: the extraction risk that argued
 against integration was measured and disproven, and the merge API was validated
 as a working mitigation. Cost: Jellymesh owns a merge graph it must split on
 every tombstone.
+
+**A-6. Invitation short code (C-EN-3).**
+Assumed: a short code is 29 Crockford base32 characters, entered with the
+inviter's address. It carries a 64-bit one-time secret and the first 80 bits
+of the inviter's key fingerprint. The joining node pins the TLS connection to
+that prefix before it sends the secret, and it learns the genesis hash over
+the pinned connection. The QR form carries the full fingerprint and the
+genesis hash.
+Rationale: a short code has to authenticate the inviter, or anyone on the
+path could accept the secret and impersonate the inviter. Matching 80 bits of
+fingerprint needs a second-preimage search far beyond anyone attacking a
+household invitation. The 64-bit secret cannot be guessed online against the
+redemption rate limit within an invitation's lifetime.
+Cost: 29 characters is longer than a typical pairing code. A PAKE such as
+CPace could make it shorter, at the cost of a protocol and a dependency, and
+is the natural revisit if the length proves a problem in the pilot.
 
 **A-5. Group state replication (C-PO-14 to C-PO-20, C-TR-9).**
 Assumed: group state (owner, epoch, administrators, the roster bound to

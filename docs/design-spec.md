@@ -483,22 +483,62 @@ Succession is a log event, and it opens a new epoch.
 
 #### Enrollment against the log
 
-1. An invitation carries the group ID, the genesis hash, and the inviter's
-   hostname and fingerprint, plus a one-time secret. The QR code and the short
-   code are two encodings of the same invitation.
-2. The invitee redeems it at the inviter's enrollment endpoint. This is the only
-   endpoint that accepts a client certificate not yet in the roster. It proves
-   possession of the secret, and it records the invitee's node ID, fingerprint,
-   hostname, and candidate publications. The inviter limits redemption attempts,
-   and the secret is single-use.
-3. The inviter forwards the redeemed request to the owner and administrators.
-4. An owner or administrator signs an approval proposal. The owner sequences an
-   `admission` event that embeds it, carrying the new member's node ID,
-   fingerprint, hostname, the invitation ID, and the inviter.
-5. Every member, including those that never saw the invitation, applies the
-   admission from the log alone. From that moment the new member's fingerprint
-   is trusted everywhere.
-6. The invitation is consumed when the inviter sees the admission in the log.
+Status: implemented in `internal/enrollment`, with the listener assembled by
+`internal/federation`. The short code's contents are assumption A-6.
+
+1. **The invitation.** An invitation is a 64-bit one-time secret plus what the
+   joining node needs to authenticate the inviter. The inviter stores only a
+   hash of the secret. It has two encodings:
+   - the **QR code** carries the inviter's address and full key fingerprint, the
+     group ID, the genesis hash, and the secret;
+   - the **short code** is 29 characters of Crockford base32, entered together
+     with the inviter's address. It carries the first 80 bits of the inviter's
+     fingerprint and the secret. Crockford's alphabet leaves out I, L, O and U,
+     and parsing ignores case, spaces and dashes.
+2. **Redemption.** The invitee connects to the inviter at
+   `POST /jellymesh/v1/enroll`, presenting its own node certificate. It accepts
+   the connection only if the inviter's key matches the invitation: exactly for
+   a QR code, by the 80-bit prefix for a short code. The secret is sent only
+   after that check. A server without the inviter's key never receives it,
+   because finding a key that matches 80 bits of fingerprint is infeasible.
+   - The key the admission will bind is the one in the invitee's certificate.
+     The request body cannot name a key, and unknown fields are refused.
+   - The body gives the invitee's node ID, name, hostname, and at least one
+     library to publish. These are staged as candidates at the inviter, which is
+     where the admission rule is enforced.
+   - The response gives the group ID and genesis hash. It arrives over the
+     pinned connection, which is what makes the genesis trustworthy when the
+     invitee started from a short code. For a QR code, a response naming a
+     different genesis is refused.
+3. **Failures.** A wrong, used, or expired secret gets the same 404, so a
+   guesser learns nothing. Redemption failures are limited across all clients,
+   to ten in ten minutes, because a guesser can present a fresh key each time.
+   While over the limit, every redemption is refused, including a correct one.
+   That delays genuine joins during a flood, which is acceptable for an
+   endpoint used a few times a year.
+4. **The decision.** An owner or administrator fetches the pending requests
+   from the inviter (`GET /jellymesh/v1/groups/{group}/requests`). Each request
+   carries the invitee's key, fingerprint, and candidate libraries, and the
+   approver checks that the key matches the fingerprint. The approver then signs
+   an `admission` proposal and submits it to the owner, who sequences it. An
+   administrator may instead deny the request at the inviter
+   (`POST .../requests/{invitation}/deny`). Both routes answer 404 to anyone who
+   is not an owner or administrator.
+5. **Applying it.** Every member, including those that never saw the
+   invitation, applies the admission from the log alone. From that moment the
+   new member's key is trusted everywhere. The inviter marks the invitation
+   admitted when it reconciles with the log.
+6. **Joining.** The invitee polls `GET /jellymesh/v1/enroll/status`. Once it is
+   admitted, it downloads the log from the inviter, now as a member. It anchors
+   the log to the genesis hash, and it refuses the log unless the log admits the
+   invitee's own key. It checks this before storing anything.
+
+The federation listener's TLS layer accepts any Ed25519 client key, because an
+invitee must connect before it is a member. Routing is therefore the
+authorization boundary. Only paths under `/jellymesh/v1/enroll` are reachable
+by a key outside every roster. Every other route needs a member's key before
+its own per-group check runs, so a route added later is private unless it is
+deliberately made public.
 
 ## 9. Catalog synchronization
 
