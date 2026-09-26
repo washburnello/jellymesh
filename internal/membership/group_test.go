@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"jellymesh/internal/audit"
 	"jellymesh/internal/grouplog"
 	"jellymesh/internal/node"
 	"jellymesh/internal/store"
@@ -339,5 +340,30 @@ func TestAnOldEventReplayedAfterRestartChangesNothing(t *testing.T) {
 	}
 	if reopened.Head() != head || reopened.IsTrusted(h.identities["walnut"].Fingerprint()) {
 		t.Fatal("a replayed admission must not readmit an ejected member")
+	}
+}
+
+// C-OP-1: changes to the group log are audited, including equivocation.
+func TestGroupChangesAreAudited(t *testing.T) {
+	h := newHarness(t)
+	h.group.SetAudit(&audit.Log{Sink: store.NewAuditRepository(h.database)})
+	rival, err := grouplog.Replay(h.group.EventsAfter(0))
+	if err != nil {
+		t.Fatalf("rival: %v", err)
+	}
+	h.sequence(t, grouplog.KindEjection, grouplog.MemberBody{MemberID: "maple"})
+	proposal, _ := grouplog.NewProposal(h.identities["cedar"], "group-1", "cedar", grouplog.KindEjection, grouplog.MemberBody{MemberID: "walnut"}, now)
+	second, _ := rival.Sequence(h.identities["cedar"], proposal, now)
+	h.group.Receive(context.Background(), second)
+
+	events, err := store.NewAuditRepository(h.database).List(context.Background(), 10)
+	if err != nil || len(events) != 2 {
+		t.Fatalf("events: %+v, %v", events, err)
+	}
+	if events[1].Action != "group.event_sequenced" || events[1].Detail["kind"] != "ejection" {
+		t.Fatalf("first event = %+v", events[1])
+	}
+	if events[0].Action != "group.equivocation" {
+		t.Fatalf("second event = %+v", events[0])
 	}
 }

@@ -13,9 +13,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
+	"jellymesh/internal/audit"
 	"jellymesh/internal/grouplog"
 	"jellymesh/internal/node"
 	"jellymesh/internal/transport"
@@ -55,6 +57,23 @@ type Group struct {
 	log    *grouplog.Log
 	store  LogStore
 	blocks BlockList
+	audit  *audit.Log
+}
+
+// SetAudit records changes to the group log to log.
+func (group *Group) SetAudit(log *audit.Log) {
+	group.mutex.Lock()
+	defer group.mutex.Unlock()
+	group.audit = log
+}
+
+func (group *Group) record(ctx context.Context, action string, event grouplog.Event) {
+	_ = group.audit.Record(ctx, event.SignerID, action, event.GroupID, map[string]string{
+		"group_id": event.GroupID,
+		"kind":     string(event.Kind),
+		"sequence": strconv.FormatUint(event.Sequence, 10),
+		"epoch":    strconv.FormatUint(event.Epoch, 10),
+	})
 }
 
 // Found creates a new group owned by identity and stores its genesis event.
@@ -106,6 +125,7 @@ func (group *Group) Receive(ctx context.Context, event grouplog.Event) (grouplog
 	}
 	outcome, err := group.log.Offer(event)
 	if errors.Is(err, grouplog.ErrEquivocation) {
+		group.record(ctx, "group.equivocation", event)
 		if saveErr := group.store.Save(ctx, group.log); saveErr != nil {
 			return 0, errors.Join(err, fmt.Errorf("store equivocation evidence: %w", saveErr))
 		}
@@ -121,6 +141,11 @@ func (group *Group) Receive(ctx context.Context, event grouplog.Event) (grouplog
 		// The event is still valid and a peer will serve it again; restore
 		// the stored log so memory never runs ahead of disk.
 		return 0, group.reloadAfter(ctx, fmt.Errorf("store received event: %w", err))
+	}
+	if outcome == grouplog.Superseded {
+		group.record(ctx, "group.superseded", event)
+	} else {
+		group.record(ctx, "group.event_applied", event)
 	}
 	return outcome, nil
 }
@@ -143,6 +168,7 @@ func (group *Group) Sequence(ctx context.Context, identity *node.Identity, propo
 	if err := group.store.Save(ctx, group.log); err != nil {
 		return grouplog.Event{}, group.reloadAfter(ctx, fmt.Errorf("store sequenced event: %w", err))
 	}
+	group.record(ctx, "group.event_sequenced", event)
 	return event, nil
 }
 
@@ -162,6 +188,7 @@ func (group *Group) Claim(ctx context.Context, identity *node.Identity, claimant
 	if err := group.store.Save(ctx, group.log); err != nil {
 		return grouplog.Event{}, group.reloadAfter(ctx, fmt.Errorf("store succession: %w", err))
 	}
+	group.record(ctx, "group.succession_claimed", event)
 	return event, nil
 }
 

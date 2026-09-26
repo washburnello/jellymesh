@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"jellymesh/internal/audit"
 	"jellymesh/internal/transport"
 )
 
@@ -56,7 +57,11 @@ type Peer struct {
 // remove access.
 type PeerRepository struct {
 	database *DB
+	audit    *audit.Log
 }
+
+// SetAudit records block decisions to log.
+func (repo *PeerRepository) SetAudit(log *audit.Log) { repo.audit = log }
 
 // NewPeerRepository builds a PeerRepository over an already-open database.
 func NewPeerRepository(database *DB) *PeerRepository {
@@ -192,6 +197,11 @@ func (repo *PeerRepository) SetBlocked(ctx context.Context, nodeID string, block
 	if err != nil {
 		return fmt.Errorf("update peer block: %w", err)
 	}
+	action := "peer.unblocked"
+	if blocked {
+		action = "peer.blocked"
+	}
+	_ = repo.audit.Record(ctx, "local", action, nodeID, map[string]string{"node_id": nodeID})
 	return nil
 }
 

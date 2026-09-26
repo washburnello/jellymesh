@@ -5,14 +5,17 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"net"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"jellymesh/internal/audit"
 	"jellymesh/internal/federation"
 	"jellymesh/internal/grouplog"
 	"jellymesh/internal/membership"
@@ -426,5 +429,53 @@ func TestJoinRefusesALogThatDoesNotAdmitThisNode(t *testing.T) {
 	}
 	if _, found, _ := w.juniper.logs().Load(context.Background(), "group-1"); found {
 		t.Fatal("a log that does not admit this node must not be stored")
+	}
+}
+
+// C-OP-1: enrollment is audited, and the invitation secret appears nowhere in
+// the audit log, in any encoding.
+func TestEnrollmentIsAuditedWithoutSecrets(t *testing.T) {
+	w := newWorld(t)
+	auditLog := &audit.Log{Sink: store.NewAuditRepository(w.cedar.database), Redactor: &audit.Redactor{}}
+	w.cedar.inviter.SetAudit(auditLog)
+	w.cedar.group.SetAudit(auditLog)
+
+	token := w.invite(t)
+	bad := token
+	bad.Secret = []byte("wrongsec")
+	libraries := []policy.Library{{ID: "m", Name: "m", CollectionType: "movies"}}
+	if _, err := Redeem(context.Background(), w.juniper.identity, bad, "juniper", "", "", libraries); !errors.Is(err, ErrInvitationUnavailable) {
+		t.Fatalf("bad redemption: %v", err)
+	}
+	w.redeem(t, token)
+	w.approve(t)
+
+	events, err := store.NewAuditRepository(w.cedar.database).List(context.Background(), 100)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	actions := map[string]bool{}
+	var everything strings.Builder
+	for _, event := range events {
+		actions[event.Action] = true
+		everything.WriteString(event.Actor + event.Action + event.Subject)
+		for key, value := range event.Detail {
+			everything.WriteString(key + value)
+		}
+	}
+	for _, want := range []string{"invitation.created", "invitation.redeem_failed", "invitation.redeemed", "group.event_sequenced"} {
+		if !actions[want] {
+			t.Errorf("no %s event in %v", want, actions)
+		}
+	}
+	for name, secret := range map[string]string{
+		"hex":        hex.EncodeToString(token.Secret),
+		"base64":     base64.StdEncoding.EncodeToString(token.Secret),
+		"short code": strings.ReplaceAll(token.ShortCode(), "-", "")[16:],
+		"code hash":  CodeHash(token.Secret),
+	} {
+		if strings.Contains(everything.String(), secret) {
+			t.Errorf("the audit log contains the secret as %s", name)
+		}
 	}
 }

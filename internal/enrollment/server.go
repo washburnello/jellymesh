@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"jellymesh/internal/audit"
 	"jellymesh/internal/grouplog"
 	"jellymesh/internal/membership"
 	"jellymesh/internal/node"
@@ -57,7 +58,11 @@ type Inviter struct {
 	store    PolicyStore
 	failures []time.Time
 	now      func() time.Time
+	audit    *audit.Log
 }
+
+// SetAudit records invitation decisions to log.
+func (inviter *Inviter) SetAudit(log *audit.Log) { inviter.audit = log }
 
 // NewInviter serves enrollment for group as nodeID, advertising address as
 // where invitees should connect.
@@ -98,6 +103,9 @@ func (inviter *Inviter) Invite(ctx context.Context, expiresAt time.Time) (Token,
 	if err := inviter.save(ctx); err != nil {
 		return Token{}, err
 	}
+	_ = inviter.audit.Record(ctx, inviter.nodeID, "invitation.created", invitationID, map[string]string{
+		"group_id": inviter.groupID, "invitation_id": invitationID,
+	})
 	return token, nil
 }
 
@@ -168,6 +176,7 @@ func (inviter *Inviter) redeem(response http.ResponseWriter, request *http.Reque
 	inviter.mutex.Lock()
 	defer inviter.mutex.Unlock()
 	if !inviter.allowAttempt() {
+		_ = inviter.audit.Record(request.Context(), "", "invitation.redeem_rate_limited", inviter.groupID, map[string]string{"group_id": inviter.groupID})
 		http.Error(response, "too many failed redemptions; try again later", http.StatusTooManyRequests)
 		return
 	}
@@ -186,6 +195,10 @@ func (inviter *Inviter) redeem(response http.ResponseWriter, request *http.Reque
 		// The same answer for a wrong, used, or expired secret, so that a
 		// guesser learns nothing about which invitations exist.
 		inviter.recordFailure()
+		callerFingerprint, _ := node.FingerprintOfPublicKey(key)
+		_ = inviter.audit.Record(request.Context(), string(callerFingerprint), "invitation.redeem_failed", inviter.groupID, map[string]string{
+			"group_id": inviter.groupID, "fingerprint": string(callerFingerprint), "reason": err.Error(),
+		})
 		if errors.Is(err, policy.ErrInvitationExpired) {
 			_ = inviter.save(request.Context())
 		}
@@ -202,6 +215,10 @@ func (inviter *Inviter) redeem(response http.ResponseWriter, request *http.Reque
 		http.Error(response, "could not record the redemption", http.StatusInternalServerError)
 		return
 	}
+	_ = inviter.audit.Record(request.Context(), invitation.InviteeID, "invitation.redeemed", invitation.InvitationID, map[string]string{
+		"group_id": inviter.groupID, "invitation_id": invitation.InvitationID,
+		"node_id": invitation.InviteeID, "fingerprint": invitation.Fingerprint,
+	})
 	writeJSON(response, RedeemResponse{
 		GroupID: inviter.groupID, Genesis: inviter.genesis(),
 		InvitationID: invitation.InvitationID, Status: string(invitation.Status),
@@ -355,6 +372,9 @@ func (inviter *Inviter) deny(response http.ResponseWriter, request *http.Request
 		http.Error(response, "could not record the denial", http.StatusInternalServerError)
 		return
 	}
+	_ = inviter.audit.Record(request.Context(), administratorID, "invitation.denied", request.PathValue("invitation"), map[string]string{
+		"group_id": inviter.groupID, "invitation_id": request.PathValue("invitation"),
+	})
 	response.WriteHeader(http.StatusNoContent)
 }
 
