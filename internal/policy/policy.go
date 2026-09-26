@@ -1,36 +1,31 @@
-// Package policy models the media-sharing controls of a Jellymesh group:
-// library publication, destination opt-out, pairwise blocks, and the
-// invitation and membership events that gate them.
+// Package policy models a node's own media-sharing decisions within a group:
+// the libraries it publishes, the publications it has learned from peers, the
+// libraries it opts out of, the peers it blocks, and the invitations it has
+// issued.
 //
-// Group roles are not modeled here. The owner, the administrator pool, the
-// member roster, succession, and dissolution are owned by internal/group, and
-// this package consults that state rather than keeping a second copy of it.
+// All of this is node-local (design-spec section 8, "What is replicated and
+// what is not"). Membership is not: who is in the group, who administers it,
+// and who has been ejected come from the replicated group log. This package
+// consults that through the Roster interface and never keeps a copy of it,
+// because a second copy is exactly what drifted from the first before.
 package policy
 
 import (
 	"errors"
 	"strings"
 	"time"
-
-	"jellymesh/internal/group"
 )
 
 const MinimumPublishedLibraries = 1
 
 var (
 	ErrGroupIDRequired          = errors.New("group ID is required")
-	ErrOwnerIDRequired          = errors.New("owner node ID is required")
 	ErrNodeIDRequired           = errors.New("node ID is required")
 	ErrLibraryIDRequired        = errors.New("library ID is required")
 	ErrPublicationRequired      = errors.New("library must be published before it can be opted out")
 	ErrInsufficientPublications = errors.New("member must publish at least one library")
 	ErrNotMember                = errors.New("node is not an active group member")
 	ErrNotAdministrator         = errors.New("only an owner or administrator can perform this action")
-	ErrCannotEjectOwner         = errors.New("the group owner cannot be ejected")
-	ErrInvalidRevocation        = errors.New("revocation sequence must be greater than zero")
-	ErrStaleRevocation          = errors.New("revocation sequence is stale")
-	ErrInvalidAdmission         = errors.New("admission requires an approved invitation")
-	ErrStaleMembershipEvent     = errors.New("membership event sequence is stale")
 	ErrInvalidInvitation        = errors.New("invitation is invalid")
 	ErrInvitationNotFound       = errors.New("invitation was not found")
 	ErrInvitationExpired        = errors.New("invitation has expired")
@@ -38,6 +33,14 @@ var (
 	ErrInvitationNotPending     = errors.New("invitation is not awaiting an approval decision")
 	ErrAlreadyMember            = errors.New("node is already an active group member")
 )
+
+// Roster is the replicated membership this package consults.
+// grouplog.State satisfies it.
+type Roster interface {
+	IsMember(nodeID string) bool
+	IsAdministrator(nodeID string) bool
+	IsEjected(nodeID string) bool
+}
 
 type Library struct {
 	ID             string
@@ -69,6 +72,8 @@ const (
 	InvitationExpired          InvitationStatus = "expired"
 )
 
+// Invitation is held only by the node that issued it. Other members learn of
+// the invitee through the admission event, never through this record.
 type Invitation struct {
 	GroupID      string
 	InvitationID string
@@ -82,72 +87,41 @@ type Invitation struct {
 	ExpiresAt    time.Time
 }
 
-type Admission struct {
-	GroupID      string
-	MemberID     string
-	InvitationID string
-	ApprovalID   string
-	Sequence     uint64
-	IssuedAt     time.Time
-}
-
-type Revocation struct {
-	GroupID  string
-	MemberID string
-	Sequence uint64
-	IssuedAt time.Time
-}
-
 type State struct {
 	// Now supplies the current time. It is injectable so that invitation
-	// expiry and membership windows can be exercised in tests without waiting
-	// for real multi-day windows. A nil Now means time.Now.
+	// expiry can be exercised in tests without waiting. A nil Now means
+	// time.Now.
 	Now func() time.Time
 
 	GroupID string
 
-	// Roles is authoritative for the owner, the administrator pool, the member
-	// roster, succession, and dissolution.
-	Roles *group.State
-
-	// Published holds libraries offered to the group by admitted members.
+	// Published holds libraries offered to the group by members, as this
+	// node knows them: its own, and those peers have served it.
 	Published map[string]Publication
 
 	// Candidates holds libraries staged by a node that is not yet admitted.
 	// The admission rule requires at least one non-empty publication before
 	// approval, but a node cannot publish into the live pool until it is a
-	// member. Candidates resolve that ordering: a joining or rejoining node
-	// stages here, and a verified admission promotes the staged entries.
+	// member. Reconcile promotes a candidate's entries once the log admits it.
 	Candidates map[string]Publication
 
-	OptOuts            map[string]map[string]OptOut
-	BlockedPeers       map[string]bool
-	Invitations        map[string]Invitation
-	EjectedMembers     map[string]bool
-	MembershipSequence uint64
+	OptOuts      map[string]map[string]OptOut
+	BlockedPeers map[string]bool
+	Invitations  map[string]Invitation
 }
 
-func NewState(groupID string, ownerID string) (*State, error) {
+func NewState(groupID string) (*State, error) {
 	groupID = strings.TrimSpace(groupID)
 	if groupID == "" {
 		return nil, ErrGroupIDRequired
 	}
-	if strings.TrimSpace(ownerID) == "" {
-		return nil, ErrOwnerIDRequired
-	}
-	roles, err := group.NewState(groupID, ownerID)
-	if err != nil {
-		return nil, err
-	}
 	return &State{
-		GroupID:        groupID,
-		Roles:          roles,
-		Published:      make(map[string]Publication),
-		Candidates:     make(map[string]Publication),
-		OptOuts:        make(map[string]map[string]OptOut),
-		BlockedPeers:   make(map[string]bool),
-		Invitations:    make(map[string]Invitation),
-		EjectedMembers: make(map[string]bool),
+		GroupID:      groupID,
+		Published:    make(map[string]Publication),
+		Candidates:   make(map[string]Publication),
+		OptOuts:      make(map[string]map[string]OptOut),
+		BlockedPeers: make(map[string]bool),
+		Invitations:  make(map[string]Invitation),
 	}, nil
 }
 
@@ -160,51 +134,47 @@ func (state *State) now() time.Time {
 }
 
 // ---------------------------------------------------------------------------
-// Role and membership queries, delegated to internal/group.
+// Reconciling with the roster.
 // ---------------------------------------------------------------------------
 
-func (state *State) IsMember(nodeID string) bool {
-	if state == nil || state.Roles == nil {
-		return false
+// Reconcile brings this node's publication view into line with the roster
+// after the group log changes. A node that is no longer a member has its
+// publications removed (C-PO-5); a staged candidate that the log has admitted
+// is promoted into the live pool; an ejected node's staged candidates are
+// discarded. It is idempotent, so it can simply run after every change.
+func (state *State) Reconcile(roster Roster) {
+	if state == nil || roster == nil {
+		return
 	}
-	return state.Roles.Members[strings.TrimSpace(nodeID)]
-}
-
-func (state *State) IsOwner(nodeID string) bool {
-	if state == nil || state.Roles == nil {
-		return false
+	for key, publication := range state.Published {
+		if !roster.IsMember(publication.SourceNodeID) {
+			delete(state.Published, key)
+		}
 	}
-	return state.Roles.IsOwner(nodeID)
-}
-
-func (state *State) IsAdministrator(nodeID string) bool {
-	if state == nil || state.Roles == nil {
-		return false
+	for key, publication := range state.Candidates {
+		switch {
+		case roster.IsMember(publication.SourceNodeID):
+			state.Published[key] = publication
+			delete(state.Candidates, key)
+		case roster.IsEjected(publication.SourceNodeID):
+			delete(state.Candidates, key)
+		}
 	}
-	return state.Roles.IsAdministrator(nodeID)
-}
-
-// Advance drives the succession and dissolution state machine owned by the
-// roles state.
-func (state *State) Advance(now time.Time) group.Decision {
-	if state == nil || state.Roles == nil {
-		return group.Decision{}
-	}
-	return state.Roles.Advance(now)
 }
 
 // ---------------------------------------------------------------------------
-// Invitations.
+// Invitations. These are local to the inviting node; admission itself is a
+// signed proposal sequenced into the group log.
 // ---------------------------------------------------------------------------
 
-func (state *State) CreateInvitation(inviterID string, invitationID string, codeHash string, expiresAt time.Time) error {
+func (state *State) CreateInvitation(roster Roster, inviterID string, invitationID string, codeHash string, expiresAt time.Time) error {
 	if state == nil {
 		return errors.New("policy state is nil")
 	}
 	if err := validateNode(inviterID); err != nil {
 		return err
 	}
-	if !state.IsMember(inviterID) {
+	if roster == nil || !roster.IsMember(inviterID) {
 		return ErrNotMember
 	}
 	invitationID = strings.TrimSpace(invitationID)
@@ -242,7 +212,7 @@ func (state *State) InvitationByID(invitationID string) (Invitation, bool) {
 // RedeemInvitation binds an invitation to the invitee's identity fingerprint.
 // Expiration applies until redemption; once redeemed the request stays pending
 // until an owner or administrator decides it.
-func (state *State) RedeemInvitation(invitationID string, inviteeID string, fingerprint string) error {
+func (state *State) RedeemInvitation(roster Roster, invitationID string, inviteeID string, fingerprint string) error {
 	if state == nil {
 		return errors.New("policy state is nil")
 	}
@@ -265,7 +235,7 @@ func (state *State) RedeemInvitation(invitationID string, inviteeID string, fing
 	if fingerprint == "" {
 		return ErrInvalidInvitation
 	}
-	if state.IsMember(inviteeID) {
+	if roster != nil && roster.IsMember(inviteeID) {
 		return ErrAlreadyMember
 	}
 	invitation.InviteeID = strings.TrimSpace(inviteeID)
@@ -276,11 +246,11 @@ func (state *State) RedeemInvitation(invitationID string, inviteeID string, fing
 }
 
 // ApproveInvitation is available to the owner and to any administrator.
-func (state *State) ApproveInvitation(actorID string, invitationID string, approvalID string) error {
+func (state *State) ApproveInvitation(roster Roster, actorID string, invitationID string, approvalID string) error {
 	if state == nil {
 		return errors.New("policy state is nil")
 	}
-	if !state.IsAdministrator(actorID) {
+	if roster == nil || !roster.IsAdministrator(actorID) {
 		return ErrNotAdministrator
 	}
 	approvalID = strings.TrimSpace(approvalID)
@@ -294,17 +264,20 @@ func (state *State) ApproveInvitation(actorID string, invitationID string, appro
 	if invitation.Status != InvitationAwaitingApproval {
 		return ErrInvitationNotPending
 	}
+	if err := state.ValidateMemberAdmission(invitation.InviteeID); err != nil {
+		return err
+	}
 	invitation.ApprovalID = approvalID
 	invitation.Status = InvitationApproved
 	state.Invitations[invitation.InvitationID] = invitation
 	return nil
 }
 
-func (state *State) DenyInvitation(actorID string, invitationID string) error {
+func (state *State) DenyInvitation(roster Roster, actorID string, invitationID string) error {
 	if state == nil {
 		return errors.New("policy state is nil")
 	}
-	if !state.IsAdministrator(actorID) {
+	if roster == nil || !roster.IsAdministrator(actorID) {
 		return ErrNotAdministrator
 	}
 	invitation, ok := state.Invitations[strings.TrimSpace(invitationID)]
@@ -333,143 +306,20 @@ func (state *State) PendingApprovals() []Invitation {
 }
 
 // ---------------------------------------------------------------------------
-// Membership events.
-// ---------------------------------------------------------------------------
-
-// EjectMember removes an ordinary member through an owner or administrator.
-// Administrator and owner protections are enforced by the roles state.
-func (state *State) EjectMember(actorID string, memberID string) error {
-	if state == nil {
-		return errors.New("policy state is nil")
-	}
-	if err := validateNode(actorID); err != nil {
-		return err
-	}
-	if err := validateNode(memberID); err != nil {
-		return err
-	}
-	if !state.IsAdministrator(actorID) {
-		return ErrNotAdministrator
-	}
-	if state.IsOwner(memberID) {
-		return ErrCannotEjectOwner
-	}
-	if err := state.Roles.Eject(actorID, memberID); err != nil {
-		return err
-	}
-	if !state.EjectedMembers[memberID] {
-		state.MembershipSequence++
-	}
-	state.eject(memberID)
-	return nil
-}
-
-// ApplyVerifiedRevocation applies a revocation whose signature has already
-// been verified, on behalf of issuerID.
-//
-// The issuer's role is checked here and not only by the caller. A signed
-// revocation is the path by which an ejection reaches every other node, so it
-// must enforce the same protections as a local EjectMember: only an owner or
-// administrator may issue one, the owner cannot be revoked, and only the owner
-// may revoke an administrator. Without the last rule an administrator could
-// remove another administrator group-wide even though the local path refuses.
-func (state *State) ApplyVerifiedRevocation(issuerID string, revocation Revocation) error {
-	if state == nil {
-		return errors.New("policy state is nil")
-	}
-	if strings.TrimSpace(revocation.GroupID) != state.GroupID {
-		return ErrGroupIDRequired
-	}
-	if err := validateNode(revocation.MemberID); err != nil {
-		return err
-	}
-	if !state.IsAdministrator(issuerID) {
-		return ErrNotAdministrator
-	}
-	if state.IsOwner(revocation.MemberID) {
-		return ErrCannotEjectOwner
-	}
-	if _, isAdmin := state.Roles.Admins[strings.TrimSpace(revocation.MemberID)]; isAdmin && !state.IsOwner(issuerID) {
-		return group.ErrAdminProtected
-	}
-	if revocation.Sequence == 0 {
-		return ErrInvalidRevocation
-	}
-	if revocation.Sequence <= state.MembershipSequence {
-		return ErrStaleRevocation
-	}
-	state.MembershipSequence = revocation.Sequence
-	delete(state.Roles.Members, revocation.MemberID)
-	delete(state.Roles.Admins, revocation.MemberID)
-	state.eject(revocation.MemberID)
-	return nil
-}
-
-// ApplyVerifiedAdmission admits a node whose invitation was approved, and
-// promotes that node's staged candidate publications into the live pool.
-func (state *State) ApplyVerifiedAdmission(admission Admission) error {
-	if state == nil {
-		return errors.New("policy state is nil")
-	}
-	if strings.TrimSpace(admission.GroupID) != state.GroupID {
-		return ErrGroupIDRequired
-	}
-	if err := validateNode(admission.MemberID); err != nil {
-		return err
-	}
-	if strings.TrimSpace(admission.InvitationID) == "" || strings.TrimSpace(admission.ApprovalID) == "" {
-		return ErrInvalidAdmission
-	}
-	invitation, ok := state.Invitations[admission.InvitationID]
-	if !ok || invitation.Status != InvitationApproved ||
-		invitation.InviteeID != admission.MemberID || invitation.ApprovalID != admission.ApprovalID {
-		return ErrInvalidAdmission
-	}
-	if admission.Sequence == 0 {
-		return ErrInvalidAdmission
-	}
-	if admission.Sequence <= state.MembershipSequence {
-		return ErrStaleMembershipEvent
-	}
-	if err := state.ValidateMemberAdmission(admission.MemberID); err != nil {
-		return err
-	}
-	state.MembershipSequence = admission.Sequence
-	state.Roles.Members[admission.MemberID] = true
-	delete(state.EjectedMembers, admission.MemberID)
-	state.promoteCandidates(admission.MemberID)
-	return nil
-}
-
-func (state *State) IsEjected(memberID string) bool {
-	if state == nil {
-		return false
-	}
-	return state.EjectedMembers[strings.TrimSpace(memberID)]
-}
-
-// eject clears every media-sharing artifact belonging to a removed node.
-func (state *State) eject(nodeID string) {
-	state.EjectedMembers[nodeID] = true
-	state.removePublications(state.Published, nodeID)
-	state.removePublications(state.Candidates, nodeID)
-}
-
-// ---------------------------------------------------------------------------
 // Publication.
 // ---------------------------------------------------------------------------
 
-// Publish offers a library to the group pool. Only an admitted member may
+// Publish records a library offered to the group pool. Only a member may
 // publish into the live pool; a node awaiting admission stages through
 // PublishCandidate instead.
-func (state *State) Publish(publication Publication) error {
+func (state *State) Publish(roster Roster, publication Publication) error {
 	if state == nil {
 		return errors.New("policy state is nil")
 	}
 	if err := state.validatePublication(&publication); err != nil {
 		return err
 	}
-	if !state.IsMember(publication.SourceNodeID) {
+	if roster == nil || !roster.IsMember(publication.SourceNodeID) {
 		return ErrNotMember
 	}
 	state.Published[publicationKey(publication.SourceNodeID, publication.Library.ID)] = publication
@@ -478,15 +328,15 @@ func (state *State) Publish(publication Publication) error {
 
 // PublishCandidate stages a library for a node that is not yet admitted, so
 // that the admission rule requiring a non-empty publication can be satisfied
-// before approval. Staged entries are promoted by ApplyVerifiedAdmission.
-func (state *State) PublishCandidate(publication Publication) error {
+// before approval.
+func (state *State) PublishCandidate(roster Roster, publication Publication) error {
 	if state == nil {
 		return errors.New("policy state is nil")
 	}
 	if err := state.validatePublication(&publication); err != nil {
 		return err
 	}
-	if state.IsMember(publication.SourceNodeID) {
+	if roster != nil && roster.IsMember(publication.SourceNodeID) {
 		return ErrAlreadyMember
 	}
 	state.Candidates[publicationKey(publication.SourceNodeID, publication.Library.ID)] = publication
@@ -545,23 +395,6 @@ func (state *State) ValidateMemberAdmission(nodeID string) error {
 		return ErrInsufficientPublications
 	}
 	return nil
-}
-
-func (state *State) promoteCandidates(nodeID string) {
-	for key, publication := range state.Candidates {
-		if publication.SourceNodeID == nodeID {
-			state.Published[key] = publication
-			delete(state.Candidates, key)
-		}
-	}
-}
-
-func (state *State) removePublications(from map[string]Publication, nodeID string) {
-	for key, publication := range from {
-		if publication.SourceNodeID == nodeID {
-			delete(from, key)
-		}
-	}
 }
 
 func countPublications(from map[string]Publication, nodeID string) int {
@@ -648,11 +481,14 @@ func (state *State) IsPeerBlocked(peerID string) bool {
 	return state.BlockedPeers[strings.TrimSpace(peerID)]
 }
 
-// CanConsume reports the federated half of effective visibility:
-// source publication AND NOT destination opt-out AND no block or ejection.
-// Local Jellyfin library permissions are the remaining, separate control.
-func (state *State) CanConsume(sourceNodeID string, libraryID string) bool {
-	if state == nil || state.IsPeerBlocked(sourceNodeID) || state.IsEjected(sourceNodeID) {
+// CanConsume reports the federated half of effective visibility: the source
+// is a current member, the library is published, this node has not opted out
+// of it, and this node has not blocked the source. It asks the roster
+// directly rather than trusting that Reconcile has run, so a stale
+// publication from a removed member is never consumable. Local Jellyfin
+// library permissions are the remaining, separate control.
+func (state *State) CanConsume(roster Roster, sourceNodeID string, libraryID string) bool {
+	if state == nil || roster == nil || !roster.IsMember(sourceNodeID) || state.IsPeerBlocked(sourceNodeID) {
 		return false
 	}
 	if _, ok := state.Published[publicationKey(sourceNodeID, libraryID)]; !ok {
@@ -661,11 +497,11 @@ func (state *State) CanConsume(sourceNodeID string, libraryID string) bool {
 	return !state.IsOptedOut(sourceNodeID, libraryID)
 }
 
-func (state *State) LibraryStatus(sourceNodeID string, libraryID string) string {
+func (state *State) LibraryStatus(roster Roster, sourceNodeID string, libraryID string) string {
 	if state == nil {
 		return ""
 	}
-	if state.IsEjected(sourceNodeID) {
+	if roster != nil && roster.IsEjected(sourceNodeID) {
 		return "ejected"
 	}
 	publication, ok := state.Published[publicationKey(sourceNodeID, libraryID)]

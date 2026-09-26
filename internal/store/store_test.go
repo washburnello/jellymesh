@@ -152,20 +152,6 @@ func TestWithTxRollsBackOnPanic(t *testing.T) {
 	}
 }
 
-func TestForeignKeyCascadeRemovesMembers(t *testing.T) {
-	database := openTestDB(t)
-	mustExec(t, database, `INSERT INTO group_state(group_id,owner_id,status) VALUES('g','cedar','active')`)
-	mustExec(t, database, `INSERT INTO members(group_id,node_id) VALUES('g','walnut')`)
-	mustExec(t, database, `DELETE FROM group_state WHERE group_id='g'`)
-	var count int
-	if err := database.SQL().QueryRow(`SELECT count(*) FROM members`).Scan(&count); err != nil {
-		t.Fatalf("count: %v", err)
-	}
-	if count != 0 {
-		t.Fatal("deleting a group must cascade to its members")
-	}
-}
-
 func TestPublicationStateIsConstrained(t *testing.T) {
 	database := openTestDB(t)
 	_, err := database.SQL().Exec(

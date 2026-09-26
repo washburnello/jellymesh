@@ -195,6 +195,15 @@ var migrations = []string{
 	`
 	ALTER TABLE peers DROP COLUMN trusted;
 	`,
+
+	// 5: the roster, roles, and membership sequence now come from the group
+	// log, so their tables go. What remains of group_state is this node's own
+	// observation of the owner's availability, which is node-local.
+	`
+	DROP TABLE members;
+	ALTER TABLE group_state DROP COLUMN membership_sequence;
+	ALTER TABLE group_state RENAME TO owner_watch;
+	`,
 }
 
 func (database *DB) migrate(ctx context.Context) error {

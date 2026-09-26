@@ -340,9 +340,10 @@ For a group of approximately twenty nodes, the owner and administrators form a b
 
 Status: assumed (conformance.md assumption A-5), 2026-09-26. The log is
 implemented in `internal/grouplog`, stored by `store.GroupLogRepository`, and
-held by `membership.Group`, which derives transport trust from it. Retiring the
-older role model in `internal/policy` and `internal/group`, and the replication
-protocol, follow.
+held by `membership.Group`, which derives transport trust from it.
+`internal/policy` consults the roster rather than keeping one, and
+`internal/group` is reduced to this node's own observation of the owner's
+availability. The replication protocol follows.
 
 Everything above describes what the group decides; this describes how every member comes to
 agree on it. Without it, signed events were verifiable but had no order: two

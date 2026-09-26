@@ -166,6 +166,25 @@ func (repo *GroupLogRepository) Save(ctx context.Context, log *grouplog.Log) err
 	})
 }
 
+// ListGroupIDs returns every group this node holds a log for, for a node
+// enumerating what it belongs to on startup.
+func (repo *GroupLogRepository) ListGroupIDs(ctx context.Context) ([]string, error) {
+	rows, err := repo.database.SQL().QueryContext(ctx, `SELECT DISTINCT group_id FROM group_log ORDER BY group_id`)
+	if err != nil {
+		return nil, fmt.Errorf("list group ids: %w", err)
+	}
+	defer rows.Close()
+	var groupIDs []string
+	for rows.Next() {
+		var groupID string
+		if err := rows.Scan(&groupID); err != nil {
+			return nil, fmt.Errorf("scan group id: %w", err)
+		}
+		groupIDs = append(groupIDs, groupID)
+	}
+	return groupIDs, rows.Err()
+}
+
 // Superseded returns the events a succession removed from this node's log.
 func (repo *GroupLogRepository) Superseded(ctx context.Context, groupID string) ([]grouplog.Event, error) {
 	rows, err := repo.database.SQL().QueryContext(ctx,

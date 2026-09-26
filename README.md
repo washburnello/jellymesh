@@ -11,14 +11,15 @@ Jellymesh is a planned federation layer for independent Jellyfin servers. Each h
 - No production server, account, library, or media has been modified.
 - Phase 0 lab scaffolding is present under `lab/`.
 - A Go Jellymesh Service skeleton is present under `cmd/jellymesh/` and `internal/`. Its only dependency is the pure-Go SQLite driver `modernc.org/sqlite`.
-- The policy core models opt-in group publication, automatic destination availability, explicit per-library opt-out, and symmetric peer blocks under `internal/policy/`.
+- The policy core under `internal/policy/` models a node's own opt-in publication, automatic destination availability, explicit per-library opt-out, symmetric peer blocks, and the invitations it issues, consulting the replicated roster for membership.
 - The history ledger model under `internal/history/` preserves per-user watched state, play counts, and resume positions across generated-content cleanup.
 - The retention store under `internal/catalog/` keeps deletion metadata/artwork identity available for a configurable grace period, defaulting to 7 days.
 - The sync policy under `internal/syncpolicy/` defaults to 5-minute health heartbeats and hourly incremental catalog sync with bounded backoff.
 - The resource policy under `internal/limits/` defaults to one concurrent remote transcode per destination while leaving direct play unrestricted.
 - The settings model under `internal/settings/` covers published libraries, source opt-outs, transcode limits, and sync-health visibility.
 - The identity model under `internal/identity/` merges work only on strong media identity and leaves ambiguous items separate.
-- The group role model under `internal/group/` encodes owner/admin privileges, explicit admin assignment, oldest-admin owner succession, and no-leadership dissolution.
+- The replicated group log under `internal/grouplog/` is the source of group membership: signed, hash-chained events that only the owner sequences, administrator decisions as signed proposals, and succession by signed attestations that fences the former owner. `internal/membership/` keeps it durable and derives transport trust from its roster.
+- The owner-absence watch under `internal/group/` tracks this node's own view of the owner's availability: when a succession claim becomes eligible, and when a group with no owner or administrators dissolves.
 
 ## Documentation
 
