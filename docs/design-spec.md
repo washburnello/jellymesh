@@ -336,6 +336,144 @@ An ejected server is untrusted and is not responsible for cleanup. The revocatio
 
 For a group of approximately twenty nodes, the owner and administrators form a bounded control plane while media and playback remain pairwise. Each node maintains its own peer directory, pairwise trust records, library publications, opt-out decisions, blocks, and health state. Full mesh connectivity is acceptable, but it must be bounded by pagination, incremental sync, rate limits, and backoff.
 
+### Group state and event replication
+
+Status: assumed (conformance.md assumption A-5), 2026-09-26. Everything above
+describes what the group decides; this describes how every member comes to
+agree on it. Without it, signed events were verifiable but had no order: two
+administrators could claim the same sequence number, an event that arrived
+after a later one was dropped permanently, and an admission could only be
+applied by the node that had seen the invitation.
+
+#### What is replicated and what is not
+
+State falls into two classes, and they are stored and changed differently.
+
+**Group state** is identical on every member, because every member derives it
+from the same log:
+
+- the owner, and the current ownership epoch;
+- the administrator set, with promotion times, which succession depends on;
+- the roster: each member's node ID bound to its key fingerprint, friendly name,
+  and public hostname;
+- ejected nodes, so a stale grant is never reinstated;
+- group-wide defaults editable by owners and administrators.
+
+**Node-local state** belongs to one node, which decides it alone and never
+replicates it:
+
+- its own library publications. The source is authoritative, and serves them to
+  each peer directly over mutual TLS;
+- its destination opt-outs and its blocks;
+- health, sync cursors, retention, and history;
+- the invitations it issued, including their secrets.
+
+Transport trust is **derived, not stored as a separate decision**. A peer is
+trusted when its fingerprint belongs to an active member in the group state and
+this node has not blocked it. Admitting a member therefore trusts it on every
+node at once, and ejecting one untrusts it everywhere. There is no second flag
+to fall out of step with the roster. The one exception is the enrollment
+endpoint, described below.
+
+#### The log
+
+Group state is the result of replaying an append-only log of signed events.
+Every event carries:
+
+```text
+group_id
+epoch         ownership term; increments only on succession
+sequence      1, 2, 3, ... with no gaps
+prev_hash     SHA-256 of the previous event's signed bytes
+kind          genesis | admission | ejection | leave | promote | demote |
+              succession | policy_update
+issued_at     informational; ordering never depends on clocks
+payload
+signature     by the owner of this epoch
+```
+
+**The owner is the only sequencer.** Only the owner's node assigns a sequence
+number, so two events can never claim the same slot. Administrators do not
+append to the log. They sign a *proposal*, for example "approve invitation X"
+or "eject member Y", and send it to the owner. The owner checks it against the
+current state and appends an event that embeds the signed proposal. Every
+receiver checks both signatures: the owner's for the ordering, and the
+proposer's for the authority. It then re-applies the same role rules, so an
+owner cannot fabricate an administrator's decision, and an administrator's
+decision cannot exceed an administrator's powers.
+
+The cost is that when the owner's node is offline, proposals queue at the
+proposer rather than taking effect. That is accepted for a group of roughly
+twenty households. An absence long enough to matter is what succession is for.
+
+**The genesis event** (sequence 1) is signed by the creating owner. It records
+the group ID and the owner's node ID and fingerprint. Its hash anchors the
+group. An invitation carries it, so a joining node can verify every event it
+downloads back to a root it received out of band from someone it trusts.
+
+#### Replication
+
+Replication is pull-based over the existing mutual-TLS connections:
+
+1. Every heartbeat exchanges each side's log head (`epoch`, `sequence`, hash).
+2. A node that is behind requests the missing range from that peer, or from any
+   other member. Events verify themselves, so a relaying peer cannot forge
+   them; it can only withhold them, which asking a different peer defeats.
+3. Events are applied strictly in order. An event that does not extend the
+   current head is held back or refetched. It is never skipped, and a gap never
+   causes an event to be dropped.
+
+A new member downloads the whole log from genesis. For a group of this size
+the log stays small, so compaction is deferred.
+
+**Equivocation.** Two different events with the same epoch and sequence, both
+correctly signed by that epoch's owner, can only come from a compromised or
+misbehaving owner, or from an owner node restored from a stale backup. A node
+that sees both stops applying events past that point, keeps both as evidence,
+and raises an operator alert. This rule has a consequence for backups: an owner
+node restored from backup must sync the log from its peers before it sequences
+anything.
+
+#### Succession and fencing
+
+Succession is a log event, and it opens a new epoch.
+
+1. Each attestation is **signed by its attestor**. It covers the group, the
+   epoch, the absent owner, `unreachable_since`, and the attestor's own log head
+   at the time it signed.
+2. The eligible successor collects a quorum and appends a `succession` event.
+   The event carries the new epoch, extends the highest head named by any
+   attestation (the claimant must fetch up to it first), embeds the
+   attestations, and is signed with the claimant's own key. It is the first
+   event of the new epoch.
+3. A node that accepts the succession event rejects every event from the old
+   epoch that sits beyond the claim's base. **The returning owner is thereby
+   fenced.** When it syncs, it finds the succession event and continues as an
+   ordinary member, and the new owner may promote it again.
+4. A minority of members that still reached the old owner may have applied
+   old-epoch events beyond the base. Because group state is a pure replay of the
+   log, those members truncate back to the base and replay the new epoch. Any
+   proposal that was lost this way is re-proposed.
+
+#### Enrollment against the log
+
+1. An invitation carries the group ID, the genesis hash, and the inviter's
+   hostname and fingerprint, plus a one-time secret. The QR code and the short
+   code are two encodings of the same invitation.
+2. The invitee redeems it at the inviter's enrollment endpoint. This is the only
+   endpoint that accepts a client certificate not yet in the roster. It proves
+   possession of the secret, and it records the invitee's node ID, fingerprint,
+   hostname, and candidate publications. The inviter limits redemption attempts,
+   and the secret is single-use.
+3. The inviter forwards the redeemed request to the owner and administrators.
+4. An owner or administrator signs an approval proposal. The owner sequences an
+   `admission` event that embeds it, carrying the new member's node ID,
+   fingerprint, hostname, the invitation ID, and the inviter.
+5. Every member, including those that never saw the invitation, applies the
+   admission from the log alone. From that moment the new member's fingerprint
+   is trusted everywhere.
+6. The invitation is consumed when the inviter sees the admission in the log.
+
 ## 9. Catalog synchronization
 
 The source node maintains a versioned group catalog and can produce a destination-scoped manifest containing only published libraries that the destination has not opted out of. The source never sends an opted-out library’s metadata to that destination.

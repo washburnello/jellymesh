@@ -70,8 +70,8 @@ findings in [plan-review.md](plan-review.md).
 | C-PO-5 | Ejection removes future participation and purges the member's publications; rejoining requires a fresh invitation and approval | `TestOwnerCanEjectAndRequireFreshAdmissionToRejoin`, `TestVerifiedRevocationPropagatesEjection` | PASS |
 | C-PO-6 | A joining server must offer at least one non-empty library before admission, satisfiable before it is a member | `TestAdmissionRuleIsSatisfiedByStagedCandidates`, `TestMemberCannotStageCandidates` | PASS |
 | C-PO-7 | Owner succession is never applied on a local timer; a claim is accepted only from the eligible successor, after the deadline, with a quorum of distinct, eligible attestors | `TestSuccessionRequiresAQuorumOfAttestations`, `TestSuccessionRejectsManufacturedQuorum`, `TestOnlyTheEligibleSuccessorMayClaim`, `TestClaimBeforeTheDeadlineIsRejected` | PASS |
-| C-PO-14 | Each absence attestation is signed by its attestor and verified, so a claimant cannot author the quorum itself | none yet | PENDING — `group.AbsenceAttestation` is an unsigned struct; a probe claimed ownership with two attestations the claimant wrote |
-| C-PO-15 | A former owner that returns after a successful succession claim is fenced and cannot issue events as owner | none yet | PENDING |
+| C-PO-14 | Each absence attestation is signed by its attestor and verified, so a claimant cannot author the quorum itself | none yet | PENDING — `group.AbsenceAttestation` is an unsigned struct; a probe claimed ownership with two attestations the claimant wrote. Design: A-5, design-spec section 8 "Succession and fencing" |
+| C-PO-15 | A former owner that returns after a successful succession claim is fenced: old-epoch events beyond the claim's base are refused, and members that applied them truncate and replay | none yet | PENDING — design: A-5 |
 | C-PO-8 | Membership, roles, publications, opt-outs, and invitations survive a restart, and behaviour after a reload matches behaviour before it | `TestMembershipRepositorySaveAndLoadRoundTrip`, `TestMembershipRepositorySaveUpdatesRatherThanDuplicating`, `TestMembershipRepositoryLoadUnknownGroupReturnsNotFound`, `TestMembershipRepositoryDelete`, `TestMembershipRepositoryListGroupIDs` | PASS |
 | C-PO-9 | Group events are signed, tamper-evident across every field, domain-separated by kind, and replay-guarded by sequence | `TestMutatingAnySingleFieldInvalidatesTheSignature`, `TestVerifyWithDifferentNodesPublicKeyFailsWithInvalidSignature`, `TestIssuerMismatchWhenSignerLiesAboutItsOwnIdentity`, `TestAdmissionSignatureCannotBePresentedAsRevocation`, `TestSequenceGuardRejectsReplayAndStaleAcceptsMonotonicIncrease` | PASS |
 | C-PO-10 | An event is applied only when its issuer is the owner or an administrator of that group, and the issuer's fingerprint matches the peer record; a correctly signed event from an ordinary member is refused | `TestCorrectlySignedEventFromOrdinaryMemberIsRefused`, `TestIssuerNameCannotBeBorrowedFromAnAdministrator`, `TestAdministratorMayIssueMembershipEvents`, `TestUnknownIssuerIsRefused` | PASS |
@@ -79,7 +79,11 @@ findings in [plan-review.md](plan-review.md).
 | C-PO-12 | A block is persisted for a peer that has never connected, applies when it appears, and survives removal of its peer record | `TestBlockOfAnUnseenPeerIsDurableAndApplies` | PASS |
 | C-PO-13 | An event refused after verification does not consume its sequence number, and a payload's sequence must match its signed envelope's | `TestRefusedEventDoesNotConsumeItsSequence`, `TestPayloadSequenceMustMatchEnvelopeSequence`, `TestSequenceGuardCheckDoesNotRecord` | PASS |
 | C-PO-16 | A signed admission can be applied by every member, including ones that never saw the invitation, and binds the admitted node's fingerprint | none yet | PENDING — `ApplyVerifiedAdmission` requires a local approved invitation record, which only the approving node has, so every other member refuses the admission |
-| C-PO-17 | Group events have one order across all members; a node that sees a gap fetches the missing events rather than dropping them, and two administrators cannot claim the same slot | none yet | PENDING — today an event that arrives after a higher sequence is rejected permanently. Needs the replication design (which state is group-replicated and which is node-local) before enrollment |
+| C-PO-17 | Group events have one order across all members: only the epoch's owner sequences, each event extends the previous by hash, and an event that does not extend the head is held or refetched, never dropped | none yet | PENDING — today an event that arrives after a higher sequence is rejected permanently. Design: A-5 |
+| C-PO-18 | An administrator's decision reaches the log only as a proposal it signed, embedded in an owner-sequenced event; receivers verify both signatures and re-apply the role rules | none yet | PENDING — design: A-5 |
+| C-PO-19 | Two correctly signed events for the same epoch and sequence are detected as equivocation; the node stops applying past that point and keeps both as evidence | none yet | PENDING — design: A-5 |
+| C-PO-20 | Group state is a pure function of the log: replaying the same log from genesis on any node yields identical state | none yet | PENDING — design: A-5 |
+| C-TR-9 | Transport trust is derived from the replicated roster and local blocks, so admission and ejection change trust on every node with no separate trust write | none yet | PENDING — design: A-5. Replaces the `peers.trusted` write in `membership.Applier` |
 
 ## 6. Durable state
 
@@ -169,6 +173,25 @@ through the Jellyfin merge API. Rationale: the extraction risk that argued
 against integration was measured and disproven, and the merge API was validated
 as a working mitigation. Cost: Jellymesh owns a merge graph it must split on
 every tombstone.
+
+**A-5. Group state replication (C-PO-14 to C-PO-20, C-TR-9).**
+Assumed: group state (owner, epoch, administrators, the roster bound to
+fingerprints, ejections, group defaults) is derived by replaying an
+append-only, hash-chained log that only the owner sequences. Administrators
+act through signed proposals the owner embeds. Replication is pull-based with
+gap repair. Succession opens a new epoch that fences the old owner. Transport
+trust is derived from the roster. Publications, opt-outs, blocks, invitations,
+and sync state stay node-local. Full design in design-spec.md section 8,
+"Group state and event replication".
+Rationale: one sequencer removes slot conflicts by construction rather than
+resolving them. Hash chaining makes the log self-verifying from any relay.
+Deriving trust from the roster removes the drift between membership and trust
+that the review found.
+Cost: while the owner's node is offline, administrator decisions queue rather
+than apply, until the owner returns or succession completes. The alternative,
+letting any administrator sequence, keeps working without the owner but needs
+conflict resolution between concurrent administrators, which is the class of
+bug this replaces.
 
 ## 10. Manual and pilot procedures
 
