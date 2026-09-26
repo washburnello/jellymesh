@@ -364,7 +364,16 @@ func (state *State) EjectMember(actorID string, memberID string) error {
 	return nil
 }
 
-func (state *State) ApplyVerifiedRevocation(revocation Revocation) error {
+// ApplyVerifiedRevocation applies a revocation whose signature has already
+// been verified, on behalf of issuerID.
+//
+// The issuer's role is checked here and not only by the caller. A signed
+// revocation is the path by which an ejection reaches every other node, so it
+// must enforce the same protections as a local EjectMember: only an owner or
+// administrator may issue one, the owner cannot be revoked, and only the owner
+// may revoke an administrator. Without the last rule an administrator could
+// remove another administrator group-wide even though the local path refuses.
+func (state *State) ApplyVerifiedRevocation(issuerID string, revocation Revocation) error {
 	if state == nil {
 		return errors.New("policy state is nil")
 	}
@@ -374,8 +383,14 @@ func (state *State) ApplyVerifiedRevocation(revocation Revocation) error {
 	if err := validateNode(revocation.MemberID); err != nil {
 		return err
 	}
+	if !state.IsAdministrator(issuerID) {
+		return ErrNotAdministrator
+	}
 	if state.IsOwner(revocation.MemberID) {
 		return ErrCannotEjectOwner
+	}
+	if _, isAdmin := state.Roles.Admins[strings.TrimSpace(revocation.MemberID)]; isAdmin && !state.IsOwner(issuerID) {
+		return group.ErrAdminProtected
 	}
 	if revocation.Sequence == 0 {
 		return ErrInvalidRevocation

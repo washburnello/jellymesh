@@ -4,6 +4,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"jellymesh/internal/group"
 )
 
 func TestPublishedLibraryIsAutoAccepted(t *testing.T) {
@@ -284,7 +286,7 @@ func TestVerifiedRevocationPropagatesEjection(t *testing.T) {
 		Sequence: state.MembershipSequence + 1,
 		IssuedAt: time.Now().UTC(),
 	}
-	if err := state.ApplyVerifiedRevocation(revocation); err != nil {
+	if err := state.ApplyVerifiedRevocation("cedar", revocation); err != nil {
 		t.Fatalf("apply verified revocation: %v", err)
 	}
 	if !state.IsEjected("maple") {
@@ -296,14 +298,14 @@ func TestVerifiedRevocationPropagatesEjection(t *testing.T) {
 	if state.CanConsume("maple", "movies") {
 		t.Fatal("revoked member's published media must not be consumable")
 	}
-	if err := state.ApplyVerifiedRevocation(revocation); !errors.Is(err, ErrStaleRevocation) {
+	if err := state.ApplyVerifiedRevocation("cedar", revocation); !errors.Is(err, ErrStaleRevocation) {
 		t.Fatalf("unexpected stale revocation error: %v", err)
 	}
 }
 
 func TestVerifiedRevocationCannotTargetOwner(t *testing.T) {
 	state := newTestState(t)
-	if err := state.ApplyVerifiedRevocation(Revocation{
+	if err := state.ApplyVerifiedRevocation("cedar", Revocation{
 		GroupID:  "group-1",
 		MemberID: "cedar",
 		Sequence: 1,
@@ -459,4 +461,40 @@ func newTestState(t *testing.T) *State {
 		t.Fatalf("new state: %v", err)
 	}
 	return state
+}
+
+// C-PO-4 on the event path: a verified revocation enforces the same role
+// protections as a local ejection.
+func TestVerifiedRevocationEnforcesAdministratorProtection(t *testing.T) {
+	state := newTestState(t)
+	admitTestMember(t, state, "maple")
+	admitTestMember(t, state, "walnut")
+	if err := state.Roles.PromoteAdmin("cedar", "maple"); err != nil {
+		t.Fatalf("promote maple: %v", err)
+	}
+	if err := state.Roles.PromoteAdmin("cedar", "walnut"); err != nil {
+		t.Fatalf("promote walnut: %v", err)
+	}
+	revocation := Revocation{
+		GroupID:  "group-1",
+		MemberID: "maple",
+		Sequence: state.MembershipSequence + 1,
+		IssuedAt: time.Now().UTC(),
+	}
+
+	if err := state.ApplyVerifiedRevocation("walnut", revocation); !errors.Is(err, group.ErrAdminProtected) {
+		t.Fatalf("administrator revoking an administrator: error = %v, want ErrAdminProtected", err)
+	}
+	if !state.IsAdministrator("maple") || !state.IsMember("maple") {
+		t.Fatal("a refused revocation must leave the target administrator in place")
+	}
+	if err := state.ApplyVerifiedRevocation("birch", revocation); !errors.Is(err, ErrNotAdministrator) {
+		t.Fatalf("revocation from a non-administrator: error = %v, want ErrNotAdministrator", err)
+	}
+	if err := state.ApplyVerifiedRevocation("cedar", revocation); err != nil {
+		t.Fatalf("owner revoking an administrator: %v", err)
+	}
+	if state.IsMember("maple") {
+		t.Fatal("the owner's revocation should remove the administrator")
+	}
 }

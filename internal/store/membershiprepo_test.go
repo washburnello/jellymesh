@@ -326,7 +326,7 @@ func TestMembershipRepositorySaveAndLoadRoundTrip(t *testing.T) {
 
 	// The membership sequence must be preserved so a replayed, stale
 	// revocation is still rejected after a restart.
-	err = loaded.ApplyVerifiedRevocation(policy.Revocation{
+	err = loaded.ApplyVerifiedRevocation("cedar", policy.Revocation{
 		GroupID:  "group-1",
 		MemberID: "birch",
 		Sequence: loaded.MembershipSequence,

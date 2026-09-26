@@ -112,7 +112,7 @@ func (applier *Applier) Apply(ctx context.Context, envelope events.Envelope, iss
 		if err := envelope.Decode(&revocation); err != nil {
 			return fmt.Errorf("decode revocation: %w", err)
 		}
-		if err := applier.state.ApplyVerifiedRevocation(revocation); err != nil {
+		if err := applier.state.ApplyVerifiedRevocation(envelope.IssuerID, revocation); err != nil {
 			return err
 		}
 		return applier.setTrust(ctx, revocation.MemberID, false)

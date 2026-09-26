@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"jellymesh/internal/events"
+	"jellymesh/internal/group"
 	"jellymesh/internal/node"
 	"jellymesh/internal/policy"
 	"jellymesh/internal/store"
@@ -242,5 +243,26 @@ func TestTamperedEventIsRefusedBeforeAnyRoleCheck(t *testing.T) {
 	}
 	if applier.State().IsEjected("maple") {
 		t.Fatal("a tampered event must not have been applied")
+	}
+}
+
+// C-PO-4 through the full event path: a correctly signed revocation of one
+// administrator by another is refused, and the target keeps transport trust.
+func TestSignedRevocationOfAnAdministratorByAnAdministratorIsRefused(t *testing.T) {
+	applier, directory, identities := fixture(t)
+	if err := applier.State().Roles.PromoteAdmin("cedar", "maple"); err != nil {
+		t.Fatalf("promote maple: %v", err)
+	}
+	envelope := revocationEnvelope(t, identities["walnut"], "walnut", "maple", 6)
+
+	err := applier.Apply(context.Background(), envelope, publicKeyOf(t, identities["walnut"]))
+	if !errors.Is(err, group.ErrAdminProtected) {
+		t.Fatalf("error = %v, want ErrAdminProtected", err)
+	}
+	if !applier.State().IsAdministrator("maple") {
+		t.Fatal("the target administrator must remain in place")
+	}
+	if !directory.peers["maple"].Trusted {
+		t.Fatal("a refused revocation must not revoke transport trust")
 	}
 }
