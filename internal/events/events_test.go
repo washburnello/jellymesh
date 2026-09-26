@@ -302,3 +302,22 @@ func TestSequenceGuardTracksGroupsIndependently(t *testing.T) {
 		t.Fatalf("expected ErrStaleSequence for a replay within group-2, got %v", err)
 	}
 }
+
+func TestSequenceGuardCheckDoesNotRecord(t *testing.T) {
+	guard := NewSequenceGuard()
+	if err := guard.Check("group-1", 1); err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	if err := guard.Check("group-1", 1); err != nil {
+		t.Fatalf("a second check of the same sequence must still pass: %v", err)
+	}
+	if err := guard.Admit("group-1", 1); err != nil {
+		t.Fatalf("admit: %v", err)
+	}
+	if err := guard.Check("group-1", 1); !errors.Is(err, ErrStaleSequence) {
+		t.Fatalf("check after admit = %v, want ErrStaleSequence", err)
+	}
+	if err := guard.Check("group-1", 0); !errors.Is(err, ErrInvalidSequence) {
+		t.Fatalf("check of zero = %v, want ErrInvalidSequence", err)
+	}
+}

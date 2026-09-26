@@ -374,15 +374,6 @@ func NewSequenceGuard() *SequenceGuard {
 	return &SequenceGuard{highest: make(map[string]uint64)}
 }
 
-// Admit returns an error for a sequence at or below the highest already
-// seen for that group, and records it otherwise. Sequence zero is always
-// invalid, matching Sign and Verify, so a guard can never be primed with an
-// admissible sequence of zero by accident.
-//
-// Groups are tracked independently: a stale sequence for one group has no
-// effect on another, since a single owner or administrator issues events
-// for exactly one group and there is no shared ordering between groups to
-// protect.
 // Seed establishes a group's high-water mark from durable state.
 //
 // A guard is in-memory and starts empty, so a node that has just restarted
@@ -402,6 +393,34 @@ func (guard *SequenceGuard) Seed(groupID string, sequence uint64) {
 	}
 }
 
+// Check reports whether sequence would be admitted for groupID, without
+// recording it.
+//
+// A caller that must apply an event before it can know whether the event is
+// valid checks first and admits only after applying succeeds. Admitting first
+// would let an event that is later refused consume its sequence number, so the
+// legitimate event for that slot would then be rejected as stale.
+func (guard *SequenceGuard) Check(groupID string, sequence uint64) error {
+	if sequence == 0 {
+		return ErrInvalidSequence
+	}
+	guard.mutex.Lock()
+	defer guard.mutex.Unlock()
+	if sequence <= guard.highest[strings.TrimSpace(groupID)] {
+		return ErrStaleSequence
+	}
+	return nil
+}
+
+// Admit returns an error for a sequence at or below the highest already
+// seen for that group, and records it otherwise. Sequence zero is always
+// invalid, matching Sign and Verify, so a guard can never be primed with an
+// admissible sequence of zero by accident.
+//
+// Groups are tracked independently: a stale sequence for one group has no
+// effect on another, since a single owner or administrator issues events
+// for exactly one group and there is no shared ordering between groups to
+// protect.
 func (guard *SequenceGuard) Admit(groupID string, sequence uint64) error {
 	if sequence == 0 {
 		return ErrInvalidSequence

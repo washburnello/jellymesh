@@ -40,6 +40,11 @@ var (
 	ErrIssuerUnknown   = errors.New("the event issuer is not a known peer")
 	ErrGroupMismatch   = errors.New("the event is for a different group")
 	ErrUnsupportedKind = errors.New("the event kind cannot be applied to membership state")
+
+	// ErrSequenceMismatch means the payload's own sequence differs from the
+	// sequence in the signed envelope. The replay guard orders envelopes and
+	// policy state orders payloads, so the two must name the same slot.
+	ErrSequenceMismatch = errors.New("the event payload sequence does not match the envelope sequence")
 )
 
 // PeerDirectory is the part of the peer store this package needs. Taking an
@@ -78,6 +83,10 @@ func NewApplier(state *policy.State, peers PeerDirectory) *Applier {
 // is what signature verification cannot do on its own: a correctly signed
 // admission from an ordinary member is cryptographically valid and must still
 // be refused. The sequence guard rejects replays of events already applied.
+//
+// The sequence is recorded only once the event has been applied. An event
+// refused by policy state therefore leaves its slot open for the legitimate
+// event, instead of consuming it.
 func (applier *Applier) Apply(ctx context.Context, envelope events.Envelope, issuerKey ed25519.PublicKey) error {
 	if applier == nil || applier.state == nil {
 		return errors.New("applier has no policy state")
@@ -91,35 +100,51 @@ func (applier *Applier) Apply(ctx context.Context, envelope events.Envelope, iss
 	if err := applier.authorizeIssuer(ctx, envelope); err != nil {
 		return err
 	}
-	if err := applier.guard.Admit(envelope.GroupID, envelope.Sequence); err != nil {
+	if err := applier.guard.Check(envelope.GroupID, envelope.Sequence); err != nil {
 		return err
 	}
 
+	var (
+		memberID string
+		trusted  bool
+	)
 	switch envelope.Kind {
 	case events.KindAdmission:
 		var admission policy.Admission
 		if err := envelope.Decode(&admission); err != nil {
 			return fmt.Errorf("decode admission: %w", err)
 		}
+		if admission.Sequence != envelope.Sequence {
+			return ErrSequenceMismatch
+		}
 		if err := applier.state.ApplyVerifiedAdmission(admission); err != nil {
 			return err
 		}
 		// An admitted member becomes reachable at the transport layer.
-		return applier.setTrust(ctx, admission.MemberID, true)
+		memberID, trusted = admission.MemberID, true
 
 	case events.KindRevocation:
 		var revocation policy.Revocation
 		if err := envelope.Decode(&revocation); err != nil {
 			return fmt.Errorf("decode revocation: %w", err)
 		}
+		if revocation.Sequence != envelope.Sequence {
+			return ErrSequenceMismatch
+		}
 		if err := applier.state.ApplyVerifiedRevocation(envelope.IssuerID, revocation); err != nil {
 			return err
 		}
-		return applier.setTrust(ctx, revocation.MemberID, false)
+		memberID, trusted = revocation.MemberID, false
 
 	default:
 		return ErrUnsupportedKind
 	}
+
+	// Policy state accepted the event, so its sequence is now spent.
+	if err := applier.guard.Admit(envelope.GroupID, envelope.Sequence); err != nil {
+		return err
+	}
+	return applier.setTrust(ctx, memberID, trusted)
 }
 
 // authorizeIssuer enforces that only an owner or administrator may issue

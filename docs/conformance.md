@@ -73,6 +73,7 @@ findings in [plan-review.md](plan-review.md).
 | C-PO-10 | An event is applied only when its issuer is the owner or an administrator of that group, and the issuer's fingerprint matches the peer record; a correctly signed event from an ordinary member is refused | `TestCorrectlySignedEventFromOrdinaryMemberIsRefused`, `TestIssuerNameCannotBeBorrowedFromAnAdministrator`, `TestAdministratorMayIssueMembershipEvents`, `TestUnknownIssuerIsRefused` | PASS |
 | C-PO-11 | The replay guard is seeded from durable state on restart, so an already-superseded sequence cannot be re-admitted by a freshly started node | `TestReplayGuardIsSeededFromDurableSequence`, `TestSeedNeverLowersTheHighWaterMark` | PASS |
 | C-PO-12 | A block is persisted for a peer that has never connected, applies when it appears, and survives removal of its peer record | `TestBlockOfAnUnseenPeerIsDurableAndApplies` | PASS |
+| C-PO-13 | An event refused after verification does not consume its sequence number, and a payload's sequence must match its signed envelope's | `TestRefusedEventDoesNotConsumeItsSequence`, `TestPayloadSequenceMustMatchEnvelopeSequence`, `TestSequenceGuardCheckDoesNotRecord` | PASS |
 
 ## 6. Durable state
 

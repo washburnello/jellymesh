@@ -266,3 +266,49 @@ func TestSignedRevocationOfAnAdministratorByAnAdministratorIsRefused(t *testing.
 		t.Fatal("a refused revocation must not revoke transport trust")
 	}
 }
+
+// C-PO-13: an event refused by policy state does not consume its sequence
+// number, so the legitimate event for that slot still applies.
+func TestRefusedEventDoesNotConsumeItsSequence(t *testing.T) {
+	applier, directory, identities := fixture(t)
+
+	// A correctly signed admission for an invitation this node never approved.
+	admission := policy.Admission{
+		GroupID: "group-1", MemberID: "birch", InvitationID: "unknown", ApprovalID: "unknown",
+		Sequence: 6, IssuedAt: time.Now().UTC(),
+	}
+	refused, err := events.Sign(identities["cedar"], events.KindAdmission, "group-1", "cedar", 6, time.Now().UTC(), admission)
+	if err != nil {
+		t.Fatalf("sign admission: %v", err)
+	}
+	if err := applier.Apply(context.Background(), refused, publicKeyOf(t, identities["cedar"])); !errors.Is(err, policy.ErrInvalidAdmission) {
+		t.Fatalf("admission error = %v, want ErrInvalidAdmission", err)
+	}
+
+	legitimate := revocationEnvelope(t, identities["cedar"], "cedar", "maple", 6)
+	if err := applier.Apply(context.Background(), legitimate, publicKeyOf(t, identities["cedar"])); err != nil {
+		t.Fatalf("the legitimate event for slot 6 was refused: %v", err)
+	}
+	if applier.State().IsMember("maple") || directory.peers["maple"].Trusted {
+		t.Fatal("the revocation should have applied")
+	}
+	if err := applier.Apply(context.Background(), legitimate, publicKeyOf(t, identities["cedar"])); !errors.Is(err, events.ErrStaleSequence) {
+		t.Fatalf("replay error = %v, want ErrStaleSequence", err)
+	}
+}
+
+// C-PO-13: the payload's sequence must name the same slot as the envelope's.
+func TestPayloadSequenceMustMatchEnvelopeSequence(t *testing.T) {
+	applier, _, identities := fixture(t)
+	envelope, err := events.Sign(identities["cedar"], events.KindRevocation, "group-1", "cedar", 9, time.Now().UTC(),
+		policy.Revocation{GroupID: "group-1", MemberID: "maple", Sequence: 6, IssuedAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	if err := applier.Apply(context.Background(), envelope, publicKeyOf(t, identities["cedar"])); !errors.Is(err, ErrSequenceMismatch) {
+		t.Fatalf("error = %v, want ErrSequenceMismatch", err)
+	}
+	if !applier.State().IsMember("maple") {
+		t.Fatal("a mismatched event must not apply")
+	}
+}
