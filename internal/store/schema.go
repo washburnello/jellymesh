@@ -154,6 +154,40 @@ var migrations = []string{
 		SELECT node_id, updated_at FROM peers WHERE blocked = 1;
 	ALTER TABLE peers DROP COLUMN blocked;
 	`,
+
+	// 3: the replicated group log (design-spec section 8). Events are stored
+	// exactly as received and re-verified on every load, so this table is a
+	// cache of the log rather than a source of trust.
+	`
+	CREATE TABLE group_log (
+		group_id  TEXT NOT NULL,
+		sequence  INTEGER NOT NULL,
+		epoch     INTEGER NOT NULL,
+		hash      TEXT NOT NULL,
+		event     TEXT NOT NULL,
+		PRIMARY KEY (group_id, sequence)
+	);
+
+	-- Old-epoch events removed by a succession, kept so their proposals can
+	-- be re-proposed and so an operator can see what was undone.
+	CREATE TABLE group_log_superseded (
+		group_id       TEXT NOT NULL,
+		hash           TEXT NOT NULL,
+		sequence       INTEGER NOT NULL,
+		event          TEXT NOT NULL,
+		superseded_at  TEXT NOT NULL,
+		PRIMARY KEY (group_id, hash)
+	);
+
+	-- Equivocation evidence. Its presence halts the group's log across
+	-- restarts until an operator intervenes.
+	CREATE TABLE group_log_evidence (
+		group_id     TEXT PRIMARY KEY,
+		existing     TEXT NOT NULL,
+		received     TEXT NOT NULL,
+		detected_at  TEXT NOT NULL
+	);
+	`,
 }
 
 func (database *DB) migrate(ctx context.Context) error {

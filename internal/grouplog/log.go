@@ -166,6 +166,20 @@ func (log *Log) Halted() (Equivocation, bool) {
 	return *log.halted, true
 }
 
+// RestoreHalt re-establishes a halt recorded before a restart. The evidence
+// must be two different events for one slot of this group; anything else is
+// refused, so a corrupted record cannot silently halt or fail to halt.
+func (log *Log) RestoreHalt(evidence Equivocation) error {
+	existing, received := evidence.Existing, evidence.Received
+	if existing.GroupID != log.state.GroupID || received.GroupID != log.state.GroupID ||
+		existing.Sequence != received.Sequence || existing.Epoch != received.Epoch ||
+		existing.Hash() == received.Hash() {
+		return fmt.Errorf("%w: evidence does not describe two events for one slot", ErrConflict)
+	}
+	log.halted = &evidence
+	return nil
+}
+
 // Append adds an event received from a peer or produced locally.
 func (log *Log) Append(event Event) (Outcome, error) {
 	if log.halted != nil {

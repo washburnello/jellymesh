@@ -98,6 +98,7 @@ findings in [plan-review.md](plan-review.md).
 | C-ST-6 | Provider health uses hysteresis; one failed request does not mark a provider offline | `TestSyncStateTransitionsFromUnknownThroughDegradedToUnavailable` | PASS |
 | C-ST-7 | Encrypted backup and restore of keys, configuration, publications, opt-outs, and sync state | none yet | PENDING |
 | C-ST-8 | Stored timestamps compare as strings in chronological order, so SQL comparisons and ordering on time columns are correct | `TestStoredTimestampsSortChronologically` | PASS |
+| C-ST-9 | The group log survives restart, is re-verified from genesis on every load so a tampered store is refused, persists a succession's truncation while keeping the removed events, and keeps a halted log halted | `TestGroupLogRepositoryRoundTrip`, `TestGroupLogRepositoryRefusesATamperedStore`, `TestGroupLogRepositoryPersistsSupersessionAndKeepsTheRemovedEvents`, `TestGroupLogRepositoryHaltSurvivesRestart` | PASS |
 
 ## 7. History and progress
 
