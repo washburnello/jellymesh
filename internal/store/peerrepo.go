@@ -21,6 +21,13 @@ var (
 	// so this is refused outright rather than silently moving the key over.
 	ErrFingerprintInUse = errors.New("fingerprint already belongs to a different node")
 
+	// ErrFingerprintChanged means an upsert tried to give an existing node a
+	// different key. There is no key rotation (design-spec.md section 8): a
+	// node with a new key is a new peer that must be enrolled afresh, so the
+	// old record has to be removed explicitly rather than re-keyed in place,
+	// which would carry the old key's trust over to the new one.
+	ErrFingerprintChanged = errors.New("a known node cannot change its fingerprint; remove it and enroll the new key")
+
 	// ErrPeerNotFound is returned by mutators that target a specific node_id
 	// which does not exist in the peers table.
 	ErrPeerNotFound = errors.New("peer not found")
@@ -35,9 +42,11 @@ type Peer struct {
 	FriendlyName   string
 	PublicHostname string
 	Trusted        bool
-	Blocked        bool
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	// Blocked is read-only: it is reported by lookups and ignored by Upsert.
+	// Blocks live in their own table and change only through SetBlocked.
+	Blocked   bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // PeerRepository is the durable store of peer trust decisions. It backs
@@ -53,15 +62,18 @@ func NewPeerRepository(database *DB) *PeerRepository {
 	return &PeerRepository{database: database}
 }
 
-// Upsert writes peer, keyed by node_id. Every field is replaced with what is
-// given, including the timestamps: like the rest of this codebase's domain
-// structs (see policy.Invitation, policy.Publication), the caller owns time
-// and passes the values it wants recorded, rather than the repository
-// silently substituting its own clock.
+// Upsert records peer, keyed by node_id.
 //
-// node_id is the identity; fingerprint must stay unique. If peer's
-// fingerprint already belongs to a different node_id, that is a trust
-// conflict, not a rename, and is rejected with ErrFingerprintInUse.
+// Creating a peer records every field given, including its initial trust
+// decision. Updating an existing peer changes only its descriptive fields
+// (friendly name, public hostname, updated_at). The security decisions are
+// deliberately not writable here: trust changes through SetTrusted and blocks
+// through SetBlocked, so that refreshing a peer's display name can never
+// quietly re-trust an ejected node or lift a block.
+//
+// node_id is the identity and fingerprint must stay unique. A fingerprint that
+// already belongs to a different node is ErrFingerprintInUse, and a different
+// fingerprint for a known node is ErrFingerprintChanged.
 func (repo *PeerRepository) Upsert(ctx context.Context, peer Peer) error {
 	nodeID := strings.TrimSpace(peer.NodeID)
 	if nodeID == "" {
@@ -86,24 +98,37 @@ func (repo *PeerRepository) Upsert(ctx context.Context, peer Peer) error {
 			return fmt.Errorf("check fingerprint conflict: %w", err)
 		}
 
+		var existingFingerprint string
+		err = tx.QueryRowContext(ctx,
+			`SELECT fingerprint FROM peers WHERE node_id = ?`, nodeID,
+		).Scan(&existingFingerprint)
+		switch {
+		case err == nil:
+			if existingFingerprint != string(peer.Fingerprint) {
+				return fmt.Errorf("%w: node %q", ErrFingerprintChanged, nodeID)
+			}
+			_, err = tx.ExecContext(ctx, `
+				UPDATE peers SET friendly_name = ?, public_hostname = ?, updated_at = ?
+				WHERE node_id = ?`,
+				peer.FriendlyName, peer.PublicHostname, FormatTime(peer.UpdatedAt), nodeID,
+			)
+			if err != nil {
+				return fmt.Errorf("update peer: %w", err)
+			}
+			return nil
+		case errors.Is(err, sql.ErrNoRows):
+		default:
+			return fmt.Errorf("look up existing peer: %w", err)
+		}
+
 		_, err = tx.ExecContext(ctx, `
-			INSERT INTO peers(node_id, fingerprint, friendly_name, public_hostname, trusted, blocked, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT(node_id) DO UPDATE SET
-				fingerprint     = excluded.fingerprint,
-				friendly_name   = excluded.friendly_name,
-				public_hostname = excluded.public_hostname,
-				trusted         = excluded.trusted,
-				blocked         = excluded.blocked,
-				created_at      = excluded.created_at,
-				updated_at      = excluded.updated_at
-			`,
+			INSERT INTO peers(node_id, fingerprint, friendly_name, public_hostname, trusted, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			nodeID, string(peer.Fingerprint), peer.FriendlyName, peer.PublicHostname,
-			boolToInt(peer.Trusted), boolToInt(peer.Blocked),
-			FormatTime(peer.CreatedAt), FormatTime(peer.UpdatedAt),
+			boolToInt(peer.Trusted), FormatTime(peer.CreatedAt), FormatTime(peer.UpdatedAt),
 		)
 		if err != nil {
-			return fmt.Errorf("upsert peer: %w", err)
+			return fmt.Errorf("insert peer: %w", err)
 		}
 		return nil
 	})
@@ -111,7 +136,7 @@ func (repo *PeerRepository) Upsert(ctx context.Context, peer Peer) error {
 
 // ByNodeID looks up a peer by its node identity.
 func (repo *PeerRepository) ByNodeID(ctx context.Context, nodeID string) (Peer, bool, error) {
-	row := repo.database.SQL().QueryRowContext(ctx, peerSelectColumns+` FROM peers WHERE node_id = ?`, nodeID)
+	row := repo.database.SQL().QueryRowContext(ctx, peerSelectColumns+` FROM peers WHERE node_id = ?`, strings.TrimSpace(nodeID))
 	return scanPeer(row)
 }
 
@@ -160,21 +185,43 @@ func (repo *PeerRepository) SetTrusted(ctx context.Context, nodeID string, trust
 	return requireRowAffected(result)
 }
 
-// SetBlocked updates whether nodeID is pairwise blocked. A block is a media
+// SetBlocked records or lifts a pairwise block on nodeID. A block is a media
 // cut, independent of the trust decision: see IsTrusted.
+//
+// It is keyed by node ID and needs no peer record, so a node can be blocked
+// before it has ever connected (C-PO-12), and removing a peer record does not
+// lift its block. This is the only function that lifts a block.
 func (repo *PeerRepository) SetBlocked(ctx context.Context, nodeID string, blocked bool) error {
 	nodeID = strings.TrimSpace(nodeID)
 	if nodeID == "" {
 		return ErrNodeIDRequired
 	}
-	result, err := repo.database.SQL().ExecContext(ctx,
-		`UPDATE peers SET blocked = ?, updated_at = ? WHERE node_id = ?`,
-		boolToInt(blocked), FormatTime(nowUTC()), nodeID,
-	)
+	var err error
+	if blocked {
+		_, err = repo.database.SQL().ExecContext(ctx,
+			`INSERT OR IGNORE INTO blocks(node_id, blocked_at) VALUES (?, ?)`,
+			nodeID, FormatTime(nowUTC()),
+		)
+	} else {
+		_, err = repo.database.SQL().ExecContext(ctx, `DELETE FROM blocks WHERE node_id = ?`, nodeID)
+	}
 	if err != nil {
 		return fmt.Errorf("update peer block: %w", err)
 	}
-	return requireRowAffected(result)
+	return nil
+}
+
+// IsBlocked reports whether nodeID is blocked, whether or not it has a peer
+// record.
+func (repo *PeerRepository) IsBlocked(ctx context.Context, nodeID string) (bool, error) {
+	var blocked int
+	err := repo.database.SQL().QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM blocks WHERE node_id = ?)`, strings.TrimSpace(nodeID),
+	).Scan(&blocked)
+	if err != nil {
+		return false, fmt.Errorf("check block: %w", err)
+	}
+	return blocked != 0, nil
 }
 
 // Remove deletes a peer's trust record entirely.
@@ -219,7 +266,8 @@ func (repo *PeerRepository) IsTrusted(fingerprint transport.Fingerprint) bool {
 
 	var trusted, blocked int
 	err := repo.database.SQL().QueryRowContext(ctx,
-		`SELECT trusted, blocked FROM peers WHERE fingerprint = ?`, string(fingerprint),
+		`SELECT p.trusted, EXISTS(SELECT 1 FROM blocks b WHERE b.node_id = p.node_id)
+		 FROM peers p WHERE p.fingerprint = ?`, string(fingerprint),
 	).Scan(&trusted, &blocked)
 	if err != nil {
 		// Includes sql.ErrNoRows (unknown fingerprint) and any I/O or driver
@@ -229,7 +277,8 @@ func (repo *PeerRepository) IsTrusted(fingerprint transport.Fingerprint) bool {
 	return trusted != 0 && blocked == 0
 }
 
-const peerSelectColumns = `SELECT node_id, fingerprint, friendly_name, public_hostname, trusted, blocked, created_at, updated_at`
+const peerSelectColumns = `SELECT node_id, fingerprint, friendly_name, public_hostname, trusted,
+	EXISTS(SELECT 1 FROM blocks WHERE blocks.node_id = peers.node_id), created_at, updated_at`
 
 // rowScanner is satisfied by both *sql.Row and *sql.Rows, letting a single
 // scan routine serve single-row and multi-row lookups.

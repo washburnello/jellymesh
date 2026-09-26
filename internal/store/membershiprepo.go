@@ -144,7 +144,7 @@ func (repo *MembershipRepository) Save(ctx context.Context, state *policy.State)
 			}
 		}
 
-		if err := syncBlockedPeers(ctx, tx, state.BlockedPeers); err != nil {
+		if err := persistBlockedPeers(ctx, tx, state.BlockedPeers); err != nil {
 			return err
 		}
 
@@ -520,71 +520,38 @@ func loadInvitations(ctx context.Context, db *sql.DB, groupID string, state *pol
 // ---------------------------------------------------------------------------
 // Blocked peers.
 //
-// There is no blocked_peers table. A block is, by design, a local pairwise
-// decision about a peer rather than group state (see C-BL-4), and the peers
-// table already carries exactly that decision in its blocked column. Reusing
-// it here means policy.State.BlockedPeers is not really a second copy of the
-// data; it is a view over the same row PeerRepository.SetBlocked writes.
+// A block is a local pairwise decision about a node rather than group state
+// (see C-BL-4), so it lives in the blocks table that PeerRepository.SetBlocked
+// owns, and policy.State.BlockedPeers is a view over it.
 //
-// The awkward edge is that peers.fingerprint is NOT NULL UNIQUE, so a block
-// can only be persisted for a node_id that already has a peer row (a real
-// fingerprint on file). Blocking a node this repository has never seen a
-// peer record for cannot be written back by the schema as given, and is
-// silently not persisted rather than fabricating a placeholder fingerprint
-// that would collide across multiple such nodes. In practice this is not a
-// real gap: a node cannot be reached to be blocked before it has been seen
-// as a peer at least once.
-//
-// The other edge is that peers.blocked is not scoped by group_id, so syncing
-// it from one group's snapshot affects every group's view of that peer. That
-// matches the stated design (a block is pairwise, not group state) as long
-// as a node participates in at most one group; a future multi-group node
-// would need blocks to move into a real per-relationship table instead.
+// Save only ever adds blocks. It must not clear a block that is absent from
+// the snapshot, because blocks are also written outside policy.State through
+// PeerRepository.SetBlocked; an earlier version mirrored the snapshot onto the
+// peers table and so lifted any such block, restoring transport trust to the
+// blocked peer as a side effect of an unrelated save. The consequence is that
+// policy.State.UnblockPeer is not durable on its own: lifting a block is an
+// explicit decision and goes through PeerRepository.SetBlocked. That errs
+// towards staying blocked, which is the safe direction.
 // ---------------------------------------------------------------------------
 
-func syncBlockedPeers(ctx context.Context, tx *sql.Tx, blockedPeers map[string]bool) error {
-	rows, err := tx.QueryContext(ctx, `SELECT node_id, blocked FROM peers`)
-	if err != nil {
-		return fmt.Errorf("list peers to sync blocks: %w", err)
-	}
-	type peerBlockState struct {
-		nodeID  string
-		blocked bool
-	}
-	var peers []peerBlockState
-	for rows.Next() {
-		var nodeID string
-		var blocked int
-		if err := rows.Scan(&nodeID, &blocked); err != nil {
-			rows.Close()
-			return fmt.Errorf("scan peer block state: %w", err)
-		}
-		peers = append(peers, peerBlockState{nodeID: nodeID, blocked: blocked != 0})
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return fmt.Errorf("list peers to sync blocks: %w", err)
-	}
-	rows.Close()
-
+func persistBlockedPeers(ctx context.Context, tx *sql.Tx, blockedPeers map[string]bool) error {
 	now := FormatTime(nowUTC())
-	for _, peer := range peers {
-		wantBlocked := blockedPeers[peer.nodeID]
-		if wantBlocked == peer.blocked {
+	for nodeID, blocked := range blockedPeers {
+		if !blocked || strings.TrimSpace(nodeID) == "" {
 			continue
 		}
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE peers SET blocked = ?, updated_at = ? WHERE node_id = ?`,
-			boolToInt(wantBlocked), now, peer.nodeID,
+			`INSERT OR IGNORE INTO blocks(node_id, blocked_at) VALUES (?, ?)`,
+			strings.TrimSpace(nodeID), now,
 		); err != nil {
-			return fmt.Errorf("sync block state for peer %q: %w", peer.nodeID, err)
+			return fmt.Errorf("persist block for %q: %w", nodeID, err)
 		}
 	}
 	return nil
 }
 
 func loadBlockedPeers(ctx context.Context, db *sql.DB, state *policy.State) error {
-	rows, err := db.QueryContext(ctx, `SELECT node_id FROM peers WHERE blocked = 1`)
+	rows, err := db.QueryContext(ctx, `SELECT node_id FROM blocks`)
 	if err != nil {
 		return fmt.Errorf("load blocked peers: %w", err)
 	}

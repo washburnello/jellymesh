@@ -10,6 +10,7 @@ import (
 	"errors"
 	"math/big"
 	"net"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -117,27 +118,124 @@ func TestFingerprintCollisionBetweenTwoNodesIsRejected(t *testing.T) {
 	}
 }
 
-func TestUpsertAllowsReassigningFingerprintToTheSameNode(t *testing.T) {
+// C-TR-7: there is no key rotation, so a known node cannot be re-keyed in
+// place. Doing so would carry the old key's trust over to the new key.
+func TestUpsertRefusesToChangeAKnownNodesFingerprint(t *testing.T) {
 	database := openTestDB(t)
 	repo := NewPeerRepository(database)
 	ctx := context.Background()
 
 	peer := samplePeer("cedar", "fingerprint-one")
+	peer.Trusted = true
 	if err := repo.Upsert(ctx, peer); err != nil {
 		t.Fatalf("first upsert: %v", err)
 	}
 	peer.Fingerprint = "fingerprint-two"
-	peer.FriendlyName = "Renamed"
-	if err := repo.Upsert(ctx, peer); err != nil {
-		t.Fatalf("second upsert (key rotation for the same node): %v", err)
+	if err := repo.Upsert(ctx, peer); !errors.Is(err, ErrFingerprintChanged) {
+		t.Fatalf("re-keying upsert: error = %v, want ErrFingerprintChanged", err)
+	}
+	if repo.IsTrusted("fingerprint-two") {
+		t.Fatal("a refused re-key must not trust the new key")
+	}
+	if !repo.IsTrusted("fingerprint-one") {
+		t.Fatal("a refused re-key must leave the existing record untouched")
 	}
 
-	got, found, err := repo.ByNodeID(ctx, "cedar")
-	if err != nil || !found {
-		t.Fatalf("by node id: found=%v err=%v", found, err)
+	// Re-enrollment is explicit: remove the old record, then enroll the new
+	// key as an untrusted peer awaiting a fresh decision.
+	if err := repo.Remove(ctx, "cedar"); err != nil {
+		t.Fatalf("remove: %v", err)
 	}
-	if got.Fingerprint != "fingerprint-two" || got.FriendlyName != "Renamed" {
-		t.Fatalf("upsert did not update in place: %+v", got)
+	peer.Trusted = false
+	if err := repo.Upsert(ctx, peer); err != nil {
+		t.Fatalf("enroll new key after removal: %v", err)
+	}
+	if repo.IsTrusted("fingerprint-two") {
+		t.Fatal("a re-enrolled key starts untrusted")
+	}
+}
+
+// C-BL-5: updating a peer's descriptive fields changes neither its trust
+// decision nor its block.
+func TestUpsertOfAKnownPeerDoesNotChangeTrustOrBlock(t *testing.T) {
+	database := openTestDB(t)
+	repo := NewPeerRepository(database)
+	ctx := context.Background()
+
+	peer := samplePeer("cedar", "fingerprint-cedar")
+	peer.Trusted = false
+	if err := repo.Upsert(ctx, peer); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	peer.Trusted = true
+	peer.FriendlyName = "Renamed"
+	if err := repo.Upsert(ctx, peer); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	got, _, err := repo.ByNodeID(ctx, "cedar")
+	if err != nil {
+		t.Fatalf("by node id: %v", err)
+	}
+	if got.Trusted {
+		t.Fatal("an upsert must not re-trust a peer; that is SetTrusted's job")
+	}
+	if got.FriendlyName != "Renamed" {
+		t.Fatalf("friendly name = %q, want Renamed", got.FriendlyName)
+	}
+
+	if err := repo.SetTrusted(ctx, "cedar", true); err != nil {
+		t.Fatalf("set trusted: %v", err)
+	}
+	if err := repo.SetBlocked(ctx, "cedar", true); err != nil {
+		t.Fatalf("set blocked: %v", err)
+	}
+	peer.Blocked = false
+	if err := repo.Upsert(ctx, peer); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if repo.IsTrusted(peer.Fingerprint) {
+		t.Fatal("an upsert must not lift a block")
+	}
+}
+
+// C-PO-12: a block is durable for a node that has never connected, and it
+// applies when that node later appears.
+func TestBlockOfAnUnseenPeerIsDurableAndApplies(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "jellymesh.db")
+	database, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	ctx := context.Background()
+	if err := NewPeerRepository(database).SetBlocked(ctx, "stranger", true); err != nil {
+		t.Fatalf("block unseen peer: %v", err)
+	}
+	database.Close()
+
+	database, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer database.Close()
+	repo := NewPeerRepository(database)
+	blocked, err := repo.IsBlocked(ctx, "stranger")
+	if err != nil || !blocked {
+		t.Fatalf("block did not survive restart: blocked=%v err=%v", blocked, err)
+	}
+
+	peer := samplePeer("stranger", "fingerprint-stranger")
+	peer.Trusted = true
+	if err := repo.Upsert(ctx, peer); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if repo.IsTrusted(peer.Fingerprint) {
+		t.Fatal("a block recorded before first contact must apply once the peer appears")
+	}
+	if err := repo.Remove(ctx, "stranger"); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if blocked, _ := repo.IsBlocked(ctx, "stranger"); !blocked {
+		t.Fatal("removing a peer record must not lift its block")
 	}
 }
 
@@ -148,9 +246,11 @@ func TestBlockedPeerIsNotTrustedEvenWhenTrustedFlagIsTrue(t *testing.T) {
 
 	peer := samplePeer("cedar", "fingerprint-cedar")
 	peer.Trusted = true
-	peer.Blocked = true
 	if err := repo.Upsert(ctx, peer); err != nil {
 		t.Fatalf("upsert: %v", err)
+	}
+	if err := repo.SetBlocked(ctx, "cedar", true); err != nil {
+		t.Fatalf("set blocked: %v", err)
 	}
 
 	if repo.IsTrusted(peer.Fingerprint) {
@@ -248,8 +348,11 @@ func TestSetTrustedSetBlockedAndRemove(t *testing.T) {
 	if err := repo.SetTrusted(ctx, "missing", true); !errors.Is(err, ErrPeerNotFound) {
 		t.Fatalf("set trusted on missing node: error = %v, want ErrPeerNotFound", err)
 	}
-	if err := repo.SetBlocked(ctx, "missing", true); !errors.Is(err, ErrPeerNotFound) {
-		t.Fatalf("set blocked on missing node: error = %v, want ErrPeerNotFound", err)
+	if err := repo.SetBlocked(ctx, "cedar", false); err != nil {
+		t.Fatalf("unblock: %v", err)
+	}
+	if !repo.IsTrusted(peer.Fingerprint) {
+		t.Fatal("unblocking should restore the existing trust decision")
 	}
 
 	if err := repo.Remove(ctx, "cedar"); err != nil {

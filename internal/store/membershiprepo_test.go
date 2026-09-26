@@ -508,3 +508,40 @@ func TestMembershipRepositorySaveRequiresStateAndGroupID(t *testing.T) {
 		t.Fatalf("delete with empty group id: error = %v, want ErrMembershipGroupIDRequired", err)
 	}
 }
+
+// C-BL-5: saving a membership snapshot never lifts a block, including one that
+// was recorded through the peer repository rather than through policy state.
+func TestMembershipSaveDoesNotLiftABlock(t *testing.T) {
+	database := openTestDB(t)
+	ctx := context.Background()
+	peers := NewPeerRepository(database)
+
+	peer := samplePeer("maple", "fingerprint-maple")
+	peer.Trusted = true
+	if err := peers.Upsert(ctx, peer); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := peers.SetBlocked(ctx, "maple", true); err != nil {
+		t.Fatalf("set blocked: %v", err)
+	}
+
+	// A snapshot that knows nothing about the block.
+	state, err := policy.NewState("group-1", "cedar")
+	if err != nil {
+		t.Fatalf("new state: %v", err)
+	}
+	if err := NewMembershipRepository(database).Save(ctx, state); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if peers.IsTrusted(peer.Fingerprint) {
+		t.Fatal("an unrelated membership save lifted a block and restored transport trust")
+	}
+
+	loaded, _, err := NewMembershipRepository(database).Load(ctx, "group-1")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !loaded.IsPeerBlocked("maple") {
+		t.Fatal("the reloaded state should report the block")
+	}
+}

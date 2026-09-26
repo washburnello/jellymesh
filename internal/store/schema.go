@@ -136,6 +136,24 @@ var migrations = []string{
 	);
 	CREATE INDEX idx_audit_occurred ON audit_events(occurred_at);
 	`,
+
+	// 2: blocks move out of the peers table.
+	//
+	// A block is a decision about a node, not about a key, so it is keyed by
+	// node_id alone and can be recorded for a node this one has never seen
+	// (C-PO-12); peers.blocked could not, because a peer row needs a
+	// fingerprint. It also gives blocks a single writer: when the flag lived
+	// on the peer row, a peer upsert or a membership snapshot could clear it
+	// as a side effect, silently restoring transport trust.
+	`
+	CREATE TABLE blocks (
+		node_id     TEXT PRIMARY KEY,
+		blocked_at  TEXT NOT NULL
+	);
+	INSERT INTO blocks(node_id, blocked_at)
+		SELECT node_id, updated_at FROM peers WHERE blocked = 1;
+	ALTER TABLE peers DROP COLUMN blocked;
+	`,
 }
 
 func (database *DB) migrate(ctx context.Context) error {

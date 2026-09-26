@@ -256,3 +256,40 @@ func contains(haystack, needle string) bool {
 		return false
 	})()
 }
+
+// Migration 2 moves blocks off the peers table. A database created at version
+// 1 with a blocked peer must still refuse that peer after upgrading.
+func TestMigrationCarriesExistingBlocksForward(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "jellymesh.db")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)`,
+		migrations[0],
+		`INSERT INTO schema_migrations(version, applied_at) VALUES (1, '2026-01-01T00:00:00Z')`,
+		`INSERT INTO peers(node_id, fingerprint, trusted, blocked, created_at, updated_at)
+		 VALUES ('maple', 'fingerprint-maple', 1, 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+	} {
+		if _, err := raw.Exec(statement); err != nil {
+			t.Fatalf("build version 1 database: %v", err)
+		}
+	}
+	raw.Close()
+
+	database, err := Open(path)
+	if err != nil {
+		t.Fatalf("open and migrate: %v", err)
+	}
+	defer database.Close()
+	if version, _ := database.SchemaVersion(context.Background()); version != len(migrations) {
+		t.Fatalf("schema version = %d, want %d", version, len(migrations))
+	}
+	if NewPeerRepository(database).IsTrusted("fingerprint-maple") {
+		t.Fatal("a peer blocked before the migration must stay blocked after it")
+	}
+}

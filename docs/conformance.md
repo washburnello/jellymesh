@@ -45,6 +45,7 @@ findings in [plan-review.md](plan-review.md).
 | C-TR-4 | Two node identities may not share a fingerprint | `TestFingerprintCollisionBetweenTwoNodesIsRejected` | PASS |
 | C-TR-5 | A successful handshake is not proof of authorization; the dial path must treat reachability and authorization separately | `TestClientHandshakeMayReturnNilDespiteServerRejection` | PASS |
 | C-TR-6 | Peer authorization is durable and survives restart | `TestPeerRepositoryAsTrustStorePerformsRealHandshake` | PASS |
+| C-TR-7 | A known node's key cannot be replaced in place; a new key is a new peer that starts untrusted | `TestUpsertRefusesToChangeAKnownNodesFingerprint` | PASS |
 
 ## 4. Trust, blocking, and fail-closed behaviour
 
@@ -54,6 +55,7 @@ findings in [plan-review.md](plan-review.md).
 | C-BL-2 | An empty fingerprint is never trusted | `TestEmptyFingerprintIsNeverTrusted` | PASS |
 | C-BL-3 | The trust check fails closed on any database error | `TestIsTrustedFailsClosedWhenDatabaseIsClosed` | PASS |
 | C-BL-4 | A block is a pairwise media cut that leaves both nodes group members, and unblocking preserves explicit opt-outs | `TestBlockOverridesPublishedLibrary`, `TestUnblockPreservesOptOut` | PASS |
+| C-BL-5 | A block, and a trust decision, change only through their explicit setters; no peer update or membership save lifts a block or re-trusts a peer as a side effect | `TestUpsertOfAKnownPeerDoesNotChangeTrustOrBlock`, `TestMembershipSaveDoesNotLiftABlock`, `TestMigrationCarriesExistingBlocksForward` | PASS |
 
 ## 5. Membership, roles, and publication
 
@@ -70,7 +72,7 @@ findings in [plan-review.md](plan-review.md).
 | C-PO-9 | Group events are signed, tamper-evident across every field, domain-separated by kind, and replay-guarded by sequence | `TestMutatingAnySingleFieldInvalidatesTheSignature`, `TestVerifyWithDifferentNodesPublicKeyFailsWithInvalidSignature`, `TestIssuerMismatchWhenSignerLiesAboutItsOwnIdentity`, `TestAdmissionSignatureCannotBePresentedAsRevocation`, `TestSequenceGuardRejectsReplayAndStaleAcceptsMonotonicIncrease` | PASS |
 | C-PO-10 | An event is applied only when its issuer is the owner or an administrator of that group, and the issuer's fingerprint matches the peer record; a correctly signed event from an ordinary member is refused | `TestCorrectlySignedEventFromOrdinaryMemberIsRefused`, `TestIssuerNameCannotBeBorrowedFromAnAdministrator`, `TestAdministratorMayIssueMembershipEvents`, `TestUnknownIssuerIsRefused` | PASS |
 | C-PO-11 | The replay guard is seeded from durable state on restart, so an already-superseded sequence cannot be re-admitted by a freshly started node | `TestReplayGuardIsSeededFromDurableSequence`, `TestSeedNeverLowersTheHighWaterMark` | PASS |
-| C-PO-12 | A block is persisted for a peer that has never connected | none yet | PENDING — `peers.blocked` requires an existing peer row with a unique fingerprint, so blocking an unseen node id is currently not durable |
+| C-PO-12 | A block is persisted for a peer that has never connected, applies when it appears, and survives removal of its peer record | `TestBlockOfAnUnseenPeerIsDurableAndApplies` | PASS |
 
 ## 6. Durable state
 
