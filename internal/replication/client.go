@@ -130,6 +130,13 @@ func (client *Client) SendAttestation(ctx context.Context, successor Peer, group
 	return client.do(ctx, successor, http.MethodPost, "/jellymesh/v1/groups/"+url.PathEscape(groupID)+"/attestations", body, nil)
 }
 
+// GetJSON fetches path from peer over the client's pinned mutual-TLS
+// transport and decodes the response. Other member-only services, such as the
+// catalog, use it so they share one transport and one error classification.
+func (client *Client) GetJSON(ctx context.Context, peer Peer, path string, into any) error {
+	return client.get(ctx, peer, path, into)
+}
+
 func (client *Client) get(ctx context.Context, peer Peer, path string, into any) error {
 	return client.do(ctx, peer, http.MethodGet, path, nil, into)
 }

@@ -274,6 +274,26 @@ var migrations = []string{
 	);
 	CREATE INDEX idx_source_items_library ON source_items(library_id, tombstone);
 	`,
+
+	// 10: the destination's view of each source's catalog (design-spec
+	// section 9, "The destination catalog").
+	`
+	CREATE TABLE remote_items (
+		source_node_id  TEXT NOT NULL,
+		item_id         TEXT NOT NULL,
+		library_id      TEXT NOT NULL,
+		parent_id       TEXT NOT NULL DEFAULT '',
+		item_type       TEXT NOT NULL,
+		revision        INTEGER NOT NULL,
+		metadata        TEXT NOT NULL,
+		updated_at      TEXT NOT NULL,
+		PRIMARY KEY (source_node_id, item_id)
+	);
+	CREATE INDEX idx_remote_items_library ON remote_items(source_node_id, library_id);
+	-- Retention keeps a withdrawn item's metadata, not only its identity, so
+	-- that it can be restored if the item returns within the grace period.
+	ALTER TABLE retention ADD COLUMN metadata TEXT NOT NULL DEFAULT '';
+	`,
 }
 
 func (database *DB) migrate(ctx context.Context) error {
