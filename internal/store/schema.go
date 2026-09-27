@@ -241,6 +241,39 @@ var migrations = []string{
 	);
 	CREATE INDEX idx_pending_proposals_group ON pending_proposals(group_id, queued_at);
 	`,
+
+	// 9: the source catalog (design-spec section 9, "The source catalog").
+	// source_publications is this node's own publication decisions with their
+	// declared roots; source_items is what it has published, with a revision
+	// per item and a node-wide change sequence. Rows are never deleted: a
+	// withdrawn item becomes a tombstone with a new sequence, so that every
+	// destination learns of it.
+	`
+	CREATE TABLE source_publications (
+		library_id       TEXT PRIMARY KEY,
+		name             TEXT NOT NULL,
+		collection_type  TEXT NOT NULL,
+		roots            TEXT NOT NULL,
+		state            TEXT NOT NULL CHECK (state IN ('published', 'paused')),
+		paused_reason    TEXT NOT NULL DEFAULT '',
+		published_at     TEXT NOT NULL,
+		updated_at       TEXT NOT NULL
+	);
+	CREATE TABLE source_items (
+		item_id     TEXT PRIMARY KEY,
+		library_id  TEXT NOT NULL,
+		parent_id   TEXT NOT NULL DEFAULT '',
+		item_type   TEXT NOT NULL,
+		revision    INTEGER NOT NULL,
+		sequence    INTEGER NOT NULL UNIQUE,
+		etag        TEXT NOT NULL DEFAULT '',
+		checksum    TEXT NOT NULL DEFAULT '',
+		tombstone   INTEGER NOT NULL DEFAULT 0,
+		metadata    TEXT NOT NULL DEFAULT '',
+		updated_at  TEXT NOT NULL
+	);
+	CREATE INDEX idx_source_items_library ON source_items(library_id, tombstone);
+	`,
 }
 
 func (database *DB) migrate(ctx context.Context) error {
