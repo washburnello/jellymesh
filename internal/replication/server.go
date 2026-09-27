@@ -28,8 +28,8 @@ const (
 	// make a node serialize an unbounded log.
 	MaxPageSize = 256
 
-	headPath      = "/jellymesh/v1/groups/{group}/log/head"
-	eventsPath    = "/jellymesh/v1/groups/{group}/log/events"
+	headPath         = "/jellymesh/v1/groups/{group}/log/head"
+	eventsPath       = "/jellymesh/v1/groups/{group}/log/events"
 	proposalsPath    = "/jellymesh/v1/groups/{group}/proposals"
 	attestationsPath = "/jellymesh/v1/groups/{group}/attestations"
 

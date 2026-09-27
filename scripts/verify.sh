@@ -13,6 +13,9 @@ DOC=docs/conformance.md
 
 echo "== build ==" && go build ./... || exit 1
 echo "== vet =="   && go vet ./...   || exit 1
+echo "== gofmt =="
+unformatted=$(gofmt -l cmd internal)
+[ -z "$unformatted" ] || { echo "  not gofmt-formatted:"; echo "$unformatted" | sed 's/^/    /'; exit 1; }
 
 # Cache the full test inventory once.
 inventory=$(go test ./... -list '.*' 2>/dev/null | grep -E '^Test[A-Za-z0-9_]+$' | sort -u)

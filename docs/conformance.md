@@ -103,8 +103,8 @@ findings in [plan-review.md](plan-review.md).
 
 | ID | Criterion | Verified by | Status |
 |---|---|---|---|
-| C-SA-1 | The source adapter authenticates as a non-administrator service user, sees only the libraries that user can see, pages through items, and re-authenticates when its token is refused | none yet | PENDING |
-| C-SA-2 | The service user's password and access token never appear in the audit log or the adapter's errors | none yet | PENDING |
+| C-SA-1 | The source adapter authenticates as a non-administrator service user, refuses an administrator account, sees only the libraries that user can see, pages through items, resolves an item's library from its ancestors, calls no administrator route, and re-authenticates when its token is refused | `TestTheServiceUserSeesOnlyItsLibraries`, `TestItemsPageAndResolveTheirLibrary`, `TestTheAdapterReauthenticatesWhenItsTokenIsRefused`, `TestAnAdministratorIsRefusedAsTheServiceUser` | PARTIAL — proven against a fake; the routes need confirming against Jellyfin 10.11.11 in the lab (M-7) |
+| C-SA-2 | The service user's password and access token never appear in the audit log or the adapter's errors | `TestSecretsNeverAppearInErrors` | PARTIAL — the adapter's errors are proven; the audit half follows when the daemon registers the credentials |
 | C-PR-1 | A protected library is absent from remote catalog, search, artwork, subtitles, and playback, including by guessed identifier | none yet | PENDING |
 | C-PR-2 | An opted-out library is absent from the same surfaces | none yet | PENDING |
 | C-CA-1 | Catalog sync is incremental, paginated, and idempotent, rejecting stale revisions | none yet | PENDING |
@@ -290,3 +290,4 @@ Not provable by unit test. These are the Phase 5 gates.
 | M-4 | A multi-home pilot survives reboots, outages, certificate renewal, and library changes | A second household willing to run alpha software, over weeks | The genuine long pole. Cannot be simulated: the failures it finds only appear over time |
 | M-5 | A first join to a group of realistic size completes in an acceptable time | A real catalog size | Half-measured: the rate is 4.72 items/second (phase-0-results.md section 4); only the item count is missing |
 | M-6 | The container image builds, starts as a non-root user with a writable data volume, reports healthy, and is administered through `docker exec` | Docker | Performed 2026-09-26 against `deploy/docker-compose.yml`'s image: built, healthy within seconds, a group founded and reported through `/jellymesh status` inside the container. Repeat after changes to the Dockerfile |
+| M-7 | The source adapter's routes and fields behave against real Jellyfin 10.11.11 as the fake assumes: `/UserViews`, `/Items` with `ParentId` paging and the `Path` and `Etag` fields, `/Items/{id}/Ancestors`, and token refusal for a non-administrator user | The lab | Run briefly, without a library scan |
