@@ -99,6 +99,20 @@ findings in [plan-review.md](plan-review.md).
 | C-EN-5 | Only an owner or administrator can list or deny pending requests, and a denied invitee learns it and cannot download the log | `TestOnlyAdministratorsSeeAndDenyRequests` | PASS |
 | C-EN-6 | On the federation listener a key outside every roster reaches only the enrollment routes; a member route without its own check is still private, and a public route outside the enrollment prefix is unreachable | `TestOnlyThePublicPrefixIsReachableByANonMember`, `TestANonMemberReachesOnlyEnrollment` | PASS |
 
+### Catalog and source
+
+| ID | Criterion | Verified by | Status |
+|---|---|---|---|
+| C-SA-1 | The source adapter authenticates as a non-administrator service user, sees only the libraries that user can see, pages through items, and re-authenticates when its token is refused | none yet | PENDING |
+| C-SA-2 | The service user's password and access token never appear in the audit log or the adapter's errors | none yet | PENDING |
+| C-PR-1 | A protected library is absent from remote catalog, search, artwork, subtitles, and playback, including by guessed identifier | none yet | PENDING |
+| C-PR-2 | An opted-out library is absent from the same surfaces | none yet | PENDING |
+| C-CA-1 | Catalog sync is incremental, paginated, and idempotent, rejecting stale revisions | none yet | PENDING |
+| C-CA-2 | A confirmed tombstone removes the item immediately while retention preserves metadata for the grace period | none yet | PENDING |
+| C-CA-3 | A library's root path set is recorded at publication; changing it pauses publication pending re-confirmation | none yet | PENDING — plan-review C1 |
+| C-CA-4 | A per-item request is authorized against the item's library as live Jellyfin state reports it now, so an item moved out of a published library is refused | none yet | PENDING — plan-review B4 |
+| C-CA-5 | The source serves its catalog only to members it has not blocked, and never sends an opted-out library's metadata to that destination; the destination drops such items even if a source sends them | none yet | PENDING |
+
 ## 6. Durable state
 
 | ID | Criterion | Verified by | Status |
@@ -133,14 +147,9 @@ behind them. They are listed so that the gap is explicit rather than implied.
 
 | ID | Criterion | Status |
 |---|---|---|
-| C-PR-1 | A protected library is absent from remote catalog, search, artwork, subtitles, and playback, including by guessed identifier | PENDING |
-| C-PR-2 | An opted-out library is absent from the same surfaces | PENDING |
 | C-PR-3 | Generated artifacts and logs contain no credentials; a `.strm` holds a local relay reference and never a peer URL or bearer token | PENDING |
 | C-PR-4 | Local Jellyfin library permissions are a browse boundary only and are not relied on for playback authorization | MANUAL — measured in phase-0-results.md section 8; the design must not assume otherwise |
 | C-PR-5 | The relay listener cannot be reached from outside the host, and requests to it are authorized locally rather than by bind address alone | none yet | PENDING — config accepts any relay address; plan-review.md notes loopback is insufficient once Jellyfin and Jellymesh are in separate network namespaces |
-| C-CA-1 | Catalog sync is incremental, paginated, and idempotent, rejecting stale revisions | PENDING |
-| C-CA-2 | A confirmed tombstone removes the item immediately while retention preserves metadata for the grace period | PENDING |
-| C-CA-3 | A library's root path set is recorded at publication; changing it pauses publication pending re-confirmation | PENDING — plan-review C1 |
 | C-MA-1 | Generated artifacts are written atomically and never appear partially to Jellyfin | PENDING |
 | C-MA-2 | Generated layout does not embed provider identifiers in directory names | PENDING — see assumption A-2 |
 | C-MA-3 | External subtitles are materialized alongside generated references | PENDING — phase-0-results.md section 6 |
@@ -221,6 +230,32 @@ Cost: a household that belongs to two separate circles of friends needs a
 second node. The replication layer already authorizes each request against
 the group it names, so lifting the limit later is a daemon change, not a
 protocol change.
+
+**A-8. A non-administrator Jellyfin service user (plan-review B3).**
+Assumed: a node reads its own Jellyfin as a dedicated non-administrator user
+that can see exactly the libraries it may publish, never with an
+administrator API key. A protected set of library IDs is refused even if the
+service user can see it.
+Rationale: the guarantee that `Family Movies` is never exposed then rests on
+Jellyfin's own permissions ("the credential cannot see it") before it rests
+on Jellymesh's checks. Holding an administrator key would make a Jellymesh
+compromise a full Jellyfin compromise.
+Cost: one extra setup step per server, since the operator creates the user
+and grants its libraries. Jellyfin's raw stream route ignores library
+permissions (phase-0-results.md section 8), so per-item requests still
+re-resolve the item's library against live state.
+
+**A-9. Declared root paths (plan-review C1).**
+Assumed: the operator declares each published library's root paths when
+publishing. Every refresh checks every item's path against them, withholds
+anything outside, and pauses the publication until it is confirmed again.
+Rationale: listing a library's configured paths needs an administrator,
+which A-8 rules out. Item paths, however, are visible to an ordinary user
+(phase-0-results.md section 8). Declaring the roots makes the operator state
+what they intend to share, and turns a path added later into a visible pause
+instead of a silent leak.
+Cost: the operator has to know their library folders. A wrong declaration
+fails safe, because publication is refused or paused rather than widened.
 
 **A-5. Group state replication (C-PO-14 to C-PO-20, C-TR-9).**
 Assumed: group state (owner, epoch, administrators, the roster bound to

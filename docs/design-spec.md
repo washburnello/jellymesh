@@ -590,6 +590,116 @@ Synchronization must:
 - never delete files outside the Jellymesh-owned generated root;
 - never write partial artifacts visible to Jellyfin.
 
+### Catalog protocol
+
+Status: assumed (conformance.md assumptions A-8 and A-9), 2026-09-27.
+This is the Phase 2 design. Materialization and the relay are Phase 3.
+
+#### The source adapter (A-8)
+
+A node reads its own Jellyfin as a **dedicated, non-administrator service
+user**, never with an administrator API key. The operator creates that user
+and grants it exactly the libraries the node may publish. Two consequences
+follow:
+
+- A library the service user cannot see can never be published. The
+  protected-library guarantee therefore rests first on Jellyfin's own
+  permission system, and only second on Jellymesh's checks (plan-review B3).
+- Compromising Jellymesh does not grant Jellyfin administration.
+
+Jellymesh authenticates with `POST /Users/AuthenticateByName` and uses the
+resulting access token. The password and the token are registered with the
+audit redactor, and the node authenticates again when the token is refused.
+It reads:
+
+- libraries from `GET /Users/{user}/Views`;
+- items from `GET /Users/{user}/Items`, a published library at a time and a
+  page at a time, with provider IDs, paths, and ETags;
+- an item's library, at request time, from `GET /Items/{item}/Ancestors`.
+
+Phase 0 showed that Jellyfin's library permissions gate metadata but not the
+raw stream route. So the service user's restrictions cannot be the only check
+on a per-item request. Every request that names an item (artwork now,
+streams in Phase 3) re-resolves that item's library from live Jellyfin
+state, and is refused unless that library is currently published. That also
+covers an item moved between libraries (plan-review B4).
+
+A **protected set** of library IDs (`JELLYMESH_PROTECTED_LIBRARIES`), with
+Cedar's `Family Movies` as its first entry, can never be published even if
+the service user can see it. This is the general default-deny rule of
+plan-review C2. A library is exposed only by explicit publication, and the
+protected set is a second barrier for the libraries that matter most.
+
+#### Publication (A-9)
+
+The operator publishes a library by its stable Jellyfin ID and declares its
+**root paths**:
+
+```text
+jellymesh publish <library-id> -root /media/movies [-root ...]
+```
+
+Publication is refused in three cases: the service user cannot see the
+library, the library is protected, or any current item lies outside the
+declared roots. Afterwards, every refresh checks every item against the
+roots. An item outside them is withheld, and the whole publication **pauses**
+until the operator publishes again with corrected roots. This closes the
+accident plan-review C1 describes: someone adds a path to a published
+library, and everything under it federates silently.
+
+#### The source catalog
+
+The source keeps a catalog of what it publishes, refreshed from Jellyfin
+every catalog interval (hourly by default) and on demand.
+
+- Every item has a **revision**. It increases when the item's ETag or
+  normalized metadata changes.
+- Every change takes the next value of a node-wide **change sequence**.
+- An item that no longer appears in a published library becomes a
+  **tombstone** with its own sequence. So does every item of a library that is
+  unpublished or paused.
+- Within a refresh, parents take sequences before their children (series,
+  then seasons, then episodes), so a consumer that applies changes in order
+  never sees a child before its parent.
+
+#### The catalog API
+
+Two member-only routes serve it, authorized per group like the log routes:
+
+```text
+GET /jellymesh/v1/groups/{group}/catalog/libraries
+GET /jellymesh/v1/groups/{group}/catalog/changes?after=S&limit=N&exclude=L1,L2
+```
+
+- **libraries** lists what the source publishes and has not paused, with
+  item counts, for the destination's opt-out interface.
+- **changes** returns up to `limit` changes after sequence `S`, in order. The
+  destination names the libraries of this source it has opted out of in
+  `exclude`, and the source never sends their metadata.
+- A destination the source has blocked gets 404. Blocks are pairwise and
+  symmetric.
+
+The responses are authenticated by the mutual-TLS session, which is pinned to
+the source's key. That satisfies the requirement for authenticated manifests
+without a second signature: the session already binds every response to the
+source.
+
+#### The destination catalog
+
+A destination keeps, per source, a cursor (the last change sequence applied)
+and a remote-catalog record for every item.
+
+- Changes are upserted idempotently. A change whose revision is older than
+  the stored one is rejected.
+- A failed or partial sync keeps the cursor and every known-good record.
+- A tombstone removes the item at once, and writes a retention record that
+  keeps its identity for the grace period.
+- The destination drops any item from a library it has opted out of, or from
+  a protected-looking library it did not expect, even if a misbehaving source
+  sends it.
+- Opting out removes that library's records locally. Opting back in refetches
+  that library from sequence zero.
+
 ### Music identity
 
 Music requires an early feasibility gate. The initial rules are:
