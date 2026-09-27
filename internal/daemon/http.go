@@ -26,7 +26,7 @@ func (routes *federationRoutes) ServeHTTP(response http.ResponseWriter, request 
 	if routes.handler == nil || routes.built != runtime {
 		services := []federation.Routes{routes.node.server}
 		if runtime != nil {
-			services = append(services, runtime.inviter)
+			services = append(services, runtime.inviter, runtime.catalogServer)
 		}
 		routes.handler = federation.Handler(routes.node.server, services...)
 		routes.built = runtime

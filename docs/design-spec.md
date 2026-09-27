@@ -328,7 +328,7 @@ If no owner or admin remains, the group enters a timeout-based dissolution state
 
 The owner and admins may sign invitations, memberships, policy updates, and revocations, but they cannot own, inspect, or impersonate member media. A node can leave or revoke its own participation, and any member can block a specific peer locally. A local `Block Server` action is modeled as a symmetric pairwise media cut: the two nodes remain group members, but neither side exchanges catalogs or media with the other. Unblocking restores normal pool behavior while preserving explicit opt-outs.
 
-A block is not a global membership mutation and must not affect unrelated peers. A node that leaves or blocks a peer may still remain visible in other nodes’ group directories according to each node’s local policy.
+A block is not a global membership mutation and must not affect unrelated peers. Because transport trust already refuses a blocked peer, a block also stops the two nodes exchanging the group log directly. Each still receives the log through the other members. A node that leaves or blocks a peer may still remain visible in other nodes’ group directories according to each node’s local policy.
 
 An owner or admin may eject an ordinary member by publishing a signed membership revocation. Ejection removes the member from future group participation, invitations, catalog publication, and new playback authorization. It cannot erase media, metadata, or other data already downloaded by the member. The owner cannot be ejected. A rejected member must receive a new invitation and fresh approval to rejoin; an old grant or membership record is never silently reinstated.
 

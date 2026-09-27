@@ -17,16 +17,21 @@ import (
 	"time"
 
 	"jellymesh/internal/audit"
+	"jellymesh/internal/catalog"
+	"jellymesh/internal/catalogsync"
 	"jellymesh/internal/config"
 	"jellymesh/internal/enrollment"
 	"jellymesh/internal/federation"
 	groupwatch "jellymesh/internal/group"
 	"jellymesh/internal/grouplog"
+	"jellymesh/internal/jellyfin"
 	"jellymesh/internal/membership"
 	"jellymesh/internal/node"
 	"jellymesh/internal/policy"
 	"jellymesh/internal/replication"
+	"jellymesh/internal/sourcecatalog"
 	"jellymesh/internal/store"
+	"jellymesh/internal/syncpolicy"
 )
 
 var (
@@ -53,6 +58,14 @@ type Node struct {
 	client   *replication.Client
 	logger   *log.Logger
 	watches  *store.OwnerWatchRepository
+	redactor *audit.Redactor
+
+	// The source side exists only when a Jellyfin service user is
+	// configured; without one the node consumes but cannot publish.
+	jellyfin *jellyfin.Client
+	source   *sourcecatalog.Catalog
+	remote   *store.RemoteCatalogRepository
+	syncs    *store.SyncRepository
 
 	mutex sync.Mutex
 	clock func() time.Time
@@ -63,6 +76,9 @@ type groupRuntime struct {
 	id      string
 	group   *membership.Group
 	inviter *enrollment.Inviter
+
+	catalogServer *catalogsync.Server
+	destination   *catalogsync.Destination
 
 	// watch is this node's view of the owner's reachability, and
 	// attestations are those other members have sent this node while it is
@@ -115,15 +131,21 @@ func Open(ctx context.Context, cfg config.Config, logger *log.Logger) (*Node, er
 		watches: store.NewOwnerWatchRepository(database),
 	}
 	n.server.ReceiveAttestations(n.receiveAttestation)
-	redactor := &audit.Redactor{}
-	redactor.Register(cfg.JellyfinAPIKey)
-	n.audit = &audit.Log{Sink: store.NewAuditRepository(database), Redactor: redactor}
+	n.redactor = &audit.Redactor{}
+	n.redactor.Register(cfg.JellyfinPassword)
+	n.audit = &audit.Log{Sink: store.NewAuditRepository(database), Redactor: n.redactor}
+	n.remote = store.NewRemoteCatalogRepository(database, catalog.DefaultDeletionGracePeriod)
+	n.syncs = store.NewSyncRepository(database)
 	n.peers.SetAudit(n.audit)
 	n.client = replication.NewClient(identity, n.server)
 
 	if n.nodeID, err = n.logs.NodeID(ctx); err != nil {
 		database.Close()
 		return nil, err
+	}
+	if cfg.JellyfinUser != "" {
+		n.jellyfin = jellyfin.New(cfg.JellyfinBaseURL, cfg.JellyfinUser, cfg.JellyfinPassword, n.nodeID)
+		n.source = sourcecatalog.New(n.jellyfin, store.NewSourceCatalogRepository(database), cfg.ProtectedLibraries, n.audit)
 	}
 	groupIDs, err := n.logs.ListGroupIDs(ctx)
 	if err != nil {
@@ -182,7 +204,11 @@ func (n *Node) attach(ctx context.Context, groupID string, group *membership.Gro
 	}
 	n.server.Add(groupID, group)
 	n.mutex.Lock()
-	n.group = &groupRuntime{id: groupID, group: group, inviter: inviter, watch: watch, attestations: map[string]grouplog.Attestation{}}
+	n.group = &groupRuntime{
+		id: groupID, group: group, inviter: inviter, watch: watch, attestations: map[string]grouplog.Attestation{},
+		catalogServer: catalogsync.NewServer(n.source, group, groupID, n.peers),
+		destination:   catalogsync.NewDestination(n.remote, n.syncs, n.client, groupID, n.audit),
+	}
 	n.mutex.Unlock()
 	return nil
 }
@@ -239,6 +265,18 @@ func (n *Node) Invite(ctx context.Context, validFor time.Duration) (enrollment.T
 func (n *Node) Redeem(ctx context.Context, token enrollment.Token, libraries []policy.Library) (enrollment.Redemption, error) {
 	if _, err := n.current(); err == nil {
 		return enrollment.Redemption{}, ErrAlreadyGroup
+	}
+	// By default a node offers what it actually publishes, which is what the
+	// admission rule is about.
+	if len(libraries) == 0 {
+		published, err := n.publishedLibraries(ctx)
+		if err != nil {
+			return enrollment.Redemption{}, err
+		}
+		if len(published) == 0 {
+			return enrollment.Redemption{}, errLibrariesRequired
+		}
+		libraries = published
 	}
 	return enrollment.Redeem(ctx, n.identity, token, n.nodeID, n.cfg.NodeName, n.cfg.PublicAddress(), libraries)
 }
@@ -522,8 +560,20 @@ func (n *Node) Run(ctx context.Context, federationListener net.Listener, interva
 	}()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	catalogTicker := time.NewTicker(syncpolicy.DefaultCatalogInterval)
+	defer catalogTicker.Stop()
+	// The first catalog pass comes soon after start rather than an hour in.
+	firstCatalog := time.After(time.Minute)
 	for {
 		select {
+		case <-firstCatalog:
+			if _, err := n.SyncCatalogOnce(ctx); err != nil {
+				n.logger.Printf("catalog: %v", err)
+			}
+		case <-catalogTicker.C:
+			if _, err := n.SyncCatalogOnce(ctx); err != nil {
+				n.logger.Printf("catalog: %v", err)
+			}
 		case <-ctx.Done():
 			shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()

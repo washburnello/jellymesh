@@ -5,7 +5,8 @@ Jellymesh is a federation layer for independent Jellyfin servers, under developm
 ## Current status
 
 - Phase 0 (feasibility) is complete; see [Phase 0 results](docs/phase-0-results.md).
-- Phase 1 (node foundation) is implemented. A node runs as a single container, forms a group with other nodes, admits new ones by invitation, keeps the replicated group log in step, derives transport trust from it, audits what it does, and backs itself up. Media sharing is not implemented yet: catalog sync, materialization, and the relay are Phases 2 and 3.
+- Phase 1 (node foundation) is implemented. A node runs as a single container, forms a group with other nodes, admits new ones by invitation, keeps the replicated group log in step, derives transport trust from it, audits what it does, and backs itself up.
+- Phase 2 (source adapters and publication policy) is implemented against a fake Jellyfin. A node reads its own Jellyfin as a non-administrator service user, publishes libraries with declared root paths, never exposes a protected library, and exchanges catalogs with the other members, honouring opt-outs and blocks at both ends. Confirming the adapter against a real Jellyfin 10.11.11 is still to do (conformance M-7). Materialization into Jellyfin, and the relay that plays remote media, are Phase 3.
 - Progress is measured against [docs/conformance.md](docs/conformance.md); run `./scripts/verify.sh`.
 
 ## Running a node
@@ -22,14 +23,21 @@ Found a group on one node, invite another, and approve it:
 jellymesh found family-and-friends
 jellymesh invite                      # prints a short code, its address, and a QR payload
 
-# On the joining node
-jellymesh join -address cedar.example.org:8443 -code XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-XXXX \
-               -library movies:Movies:movies
+# On every node: see what the Jellyfin service user can see, and publish
+jellymesh libraries
+jellymesh publish <library-id> -root /media/movies
+
+# On the joining node, which offers what it publishes
+jellymesh join -address cedar.example.org:8443 -code XXXXX-XXXXX-XXXXX-XXXXX-XXXXX-XXXX
 
 # On the owner's or any administrator's node
 jellymesh requests
 jellymesh approve <inviter-id> <invitation-id>
 ```
+
+Afterwards, `jellymesh remote` lists what the other members publish, and `jellymesh optout <source-id> <library-id>` hides one of their libraries.
+
+Jellymesh reads Jellyfin as a dedicated user that is not an administrator. Create it in Jellyfin, give it access to exactly the libraries you may publish, and set `JELLYMESH_JELLYFIN_USER` and `JELLYMESH_JELLYFIN_PASSWORD`. List libraries that must never be shared, such as a family library, in `JELLYMESH_PROTECTED_LIBRARIES`, by library ID.
 
 In a container deployment, prefix each command with `docker compose exec jellymesh /jellymesh` in place of `jellymesh`. The admin API listens on loopback only.
 

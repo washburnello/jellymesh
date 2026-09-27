@@ -134,6 +134,24 @@ func (repo *RemoteCatalogRepository) RemoveSource(ctx context.Context, sourceNod
 	return nil
 }
 
+// Sources returns every source this node holds records for.
+func (repo *RemoteCatalogRepository) Sources(ctx context.Context) ([]string, error) {
+	rows, err := repo.database.SQL().QueryContext(ctx, `SELECT DISTINCT source_node_id FROM remote_items ORDER BY source_node_id`)
+	if err != nil {
+		return nil, fmt.Errorf("list remote sources: %w", err)
+	}
+	defer rows.Close()
+	var sources []string
+	for rows.Next() {
+		var source string
+		if err := rows.Scan(&source); err != nil {
+			return nil, err
+		}
+		sources = append(sources, source)
+	}
+	return sources, rows.Err()
+}
+
 // Items returns a source's records, optionally for one library.
 func (repo *RemoteCatalogRepository) Items(ctx context.Context, sourceNodeID string, libraryID string) ([]RemoteItem, error) {
 	statement := `SELECT source_node_id, item_id, library_id, parent_id, item_type, revision, metadata FROM remote_items WHERE source_node_id = ?`

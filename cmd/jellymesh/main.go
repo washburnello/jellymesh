@@ -13,6 +13,12 @@
 //	jellymesh leave
 //	jellymesh block|unblock <node-id>
 //	jellymesh sync                          run one heartbeat now
+//	jellymesh libraries                     list what the Jellyfin service user can see
+//	jellymesh publish <library-id> -root /path [-root ...]
+//	jellymesh unpublish <library-id>
+//	jellymesh remote                        list other members' libraries
+//	jellymesh optout|optin <source-id> <library-id>
+//	jellymesh catalog-sync                  refresh and pull catalogs now
 //	jellymesh backup <file>                 write an encrypted backup
 //	jellymesh restore <file>                restore a backup into an empty data directory
 //	jellymesh healthcheck                   exit 0 if the local node answers (for container health checks)
@@ -65,7 +71,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: jellymesh serve|status|found|invite|join|requests|approve|deny|eject|promote|demote|leave|block|unblock|sync|backup|restore|healthcheck")
+	fmt.Fprintln(os.Stderr, "usage: jellymesh serve|status|found|invite|join|requests|approve|deny|eject|promote|demote|leave|block|unblock|sync|libraries|publish|unpublish|remote|optout|optin|catalog-sync|backup|restore|healthcheck")
 	os.Exit(2)
 }
 
@@ -125,6 +131,35 @@ func run(cfg config.Config, command string, args []string) error {
 		return admin.print(method, "/admin/v1/blocks/"+args[0], nil)
 	case "sync":
 		return admin.print(http.MethodPost, "/admin/v1/sync", nil)
+	case "libraries":
+		return admin.print(http.MethodGet, "/admin/v1/libraries", nil)
+	case "publish":
+		if len(args) < 1 {
+			return errors.New("usage: jellymesh publish <library-id> -root /path [-root ...]")
+		}
+		flags := flag.NewFlagSet("publish", flag.ExitOnError)
+		var roots rootFlags
+		flags.Var(&roots, "root", "a root path of the library (repeatable; at least one)")
+		flags.Parse(args[1:])
+		return admin.print(http.MethodPost, "/admin/v1/publications", daemon.PublishRequest{LibraryID: args[0], Roots: roots})
+	case "unpublish":
+		if len(args) != 1 {
+			return errors.New("usage: jellymesh unpublish <library-id>")
+		}
+		return admin.print(http.MethodDelete, "/admin/v1/publications/"+args[0], nil)
+	case "remote":
+		return admin.print(http.MethodGet, "/admin/v1/remote", nil)
+	case "optout", "optin":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: jellymesh %s <source-id> <library-id>", command)
+		}
+		method := http.MethodPut
+		if command == "optin" {
+			method = http.MethodDelete
+		}
+		return admin.print(method, "/admin/v1/optouts/"+args[0]+"/"+args[1], nil)
+	case "catalog-sync":
+		return admin.print(http.MethodPost, "/admin/v1/catalog/sync", nil)
 	}
 	usage()
 	return nil
@@ -219,6 +254,15 @@ func (admin *adminClient) print(method string, path string, body any) error {
 	return admin.call(method, path, body, nil)
 }
 
+type rootFlags []string
+
+func (roots *rootFlags) String() string { return strings.Join(*roots, ",") }
+
+func (roots *rootFlags) Set(value string) error {
+	*roots = append(*roots, value)
+	return nil
+}
+
 type libraryFlags []policy.Library
 
 func (libraries *libraryFlags) String() string { return fmt.Sprint(*libraries) }
@@ -240,7 +284,7 @@ func join(admin *adminClient, args []string) error {
 	qr := flags.String("qr", "", "the invitation's QR text")
 	wait := flags.Duration("wait", 24*time.Hour, "how long to wait for an owner or administrator to decide")
 	var libraries libraryFlags
-	flags.Var(&libraries, "library", "a library to publish, as id:name:collection-type (repeatable; at least one)")
+	flags.Var(&libraries, "library", "a library to offer, as id:name:collection-type (repeatable; defaults to this node's publications)")
 	flags.Parse(args)
 
 	var pending daemon.PendingJoin

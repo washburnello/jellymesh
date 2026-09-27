@@ -403,6 +403,22 @@ func (inviter *Inviter) deny(response http.ResponseWriter, request *http.Request
 	response.WriteHeader(http.StatusNoContent)
 }
 
+// WithPolicy runs change against the node's policy state under the inviter's
+// lock, with the current roster, and saves the result. The inviter owns the
+// policy state; anything else that changes it, such as opt-outs or the
+// publications learned from peers, goes through here so there is one writer.
+func (inviter *Inviter) WithPolicy(ctx context.Context, change func(state *policy.State, roster policy.Roster) error) error {
+	inviter.mutex.Lock()
+	defer inviter.mutex.Unlock()
+	err := inviter.withRoster(func(roster policy.Roster) error {
+		return change(inviter.policy, roster)
+	})
+	if err != nil {
+		return err
+	}
+	return inviter.save(ctx)
+}
+
 // Reconcile updates invitation state after the group log changes, marking
 // invitations whose invitee has been admitted.
 func (inviter *Inviter) Reconcile(ctx context.Context) error {

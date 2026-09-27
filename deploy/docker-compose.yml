@@ -25,6 +25,16 @@ services:
       # it differs from 8443.
       JELLYMESH_PUBLIC_HOSTNAME: "cedar.example.org"
       JELLYMESH_NODE_NAME: "Cedar"
+      # The co-located Jellyfin, read as a dedicated user that is NOT an
+      # administrator and can see only the libraries this node may publish.
+      # With Jellyfin on the host network, reach it through the host gateway.
+      JELLYMESH_JELLYFIN_URL: "http://host.docker.internal:8096"
+      JELLYMESH_JELLYFIN_USER: "jellymesh"
+      JELLYMESH_JELLYFIN_PASSWORD: "${JELLYMESH_JELLYFIN_PASSWORD:?set it in .env}"
+      # Library IDs that must never be published, whatever the user can see.
+      JELLYMESH_PROTECTED_LIBRARIES: ""
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
 volumes:
   jellymesh-data:

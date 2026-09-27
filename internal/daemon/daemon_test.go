@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -11,13 +12,17 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"jellymesh/internal/backup"
 	"jellymesh/internal/config"
 	"jellymesh/internal/enrollment"
+	"jellymesh/internal/jellyfin"
+	"jellymesh/internal/jellyfin/jellyfintest"
 	"jellymesh/internal/policy"
+	"jellymesh/internal/store"
 )
 
 type testDaemon struct {
@@ -34,6 +39,13 @@ type testDaemon struct {
 
 func startDaemon(t *testing.T, name string, dataDir string, address string) *testDaemon {
 	t.Helper()
+	return startDaemonWith(t, name, dataDir, address, nil)
+}
+
+// startDaemonWith starts a daemon after configure has adjusted its config,
+// for example to give it a Jellyfin service user.
+func startDaemonWith(t *testing.T, name string, dataDir string, address string, configure func(*config.Config)) *testDaemon {
+	t.Helper()
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
 		t.Fatalf("listen %s: %v", name, err)
@@ -46,7 +58,9 @@ func startDaemon(t *testing.T, name string, dataDir string, address string) *tes
 		DataDirectory:           dataDir,
 		NodeKeyPath:             filepath.Join(dataDir, "node.key"),
 		NodeCertPath:            filepath.Join(dataDir, "node.crt"),
-		JellyfinAPIKey:          "jellyfin-api-key-for-" + name,
+	}
+	if configure != nil {
+		configure(&cfg)
 	}
 	if d.node, err = Open(context.Background(), cfg, log.New(io.Discard, "", 0)); err != nil {
 		t.Fatalf("open %s: %v", name, err)
@@ -122,12 +136,18 @@ func (d *testDaemon) sync() SyncResult {
 // inviter invites, the joiner redeems, approver approves, the joiner joins.
 func join(t *testing.T, inviter *testDaemon, joiner *testDaemon, approver *testDaemon) {
 	t.Helper()
+	joinOffering(t, inviter, joiner, approver, []policy.Library{{ID: joiner.name + "-movies", Name: "Movies", CollectionType: "movies"}})
+}
+
+// joinOffering is join with the libraries the joiner offers; nil means its
+// own publications.
+func joinOffering(t *testing.T, inviter *testDaemon, joiner *testDaemon, approver *testDaemon, libraries []policy.Library) {
+	t.Helper()
 	var invitation InviteResponse
 	inviter.must(http.MethodPost, "/admin/v1/invitations", InviteRequest{ValidForSeconds: 3600}, &invitation)
 	var pending PendingJoin
 	joiner.must(http.MethodPost, "/admin/v1/join/redeem", RedeemAdminRequest{
-		ShortCode: invitation.ShortCode, Address: invitation.Address,
-		Libraries: []policy.Library{{ID: joiner.name + "-movies", Name: "Movies", CollectionType: "movies"}},
+		ShortCode: invitation.ShortCode, Address: invitation.Address, Libraries: libraries,
 	}, &pending)
 	var waiting PendingJoin
 	joiner.must(http.MethodPost, "/admin/v1/join/complete", pending, &waiting)
@@ -383,5 +403,139 @@ func TestSuccessionRunsOverTheWire(t *testing.T) {
 	}
 	if status := cedar.call(http.MethodPost, "/admin/v1/members/"+maple.node.NodeID()+"/promote", nil, &Outcome{}); status == http.StatusOK {
 		t.Fatal("the former owner may no longer promote")
+	}
+}
+
+func withServiceUser(fake *jellyfintest.Server, protected ...string) func(*config.Config) {
+	return func(cfg *config.Config) {
+		cfg.JellyfinBaseURL, cfg.JellyfinUser, cfg.JellyfinPassword = fake.URL, "jellymesh", "service-user-password-for-tests"
+		cfg.ProtectedLibraries = protected
+	}
+}
+
+func (d *testDaemon) remote() map[string]RemoteLibrary {
+	var libraries []RemoteLibrary
+	d.must(http.MethodGet, "/admin/v1/remote", nil, &libraries)
+	byLibrary := map[string]RemoteLibrary{}
+	for _, library := range libraries {
+		byLibrary[library.LibraryID] = library
+	}
+	return byLibrary
+}
+
+func (d *testDaemon) catalogSync() CatalogResult {
+	var result CatalogResult
+	d.must(http.MethodPost, "/admin/v1/catalog/sync", nil, &result)
+	return result
+}
+
+// C-OP-7: catalogs flow between members through the daemon: publication with
+// declared roots, a protected library refused, a join that offers the
+// joiner's own publications, opting out and back in, a block, and ejection
+// removing the ejected member's items. No service-user secret is audited.
+func TestCatalogsFlowBetweenMembersThroughTheDaemon(t *testing.T) {
+	cedarJellyfin, walnutJellyfin := jellyfintest.New(), jellyfintest.New()
+	defer cedarJellyfin.Close()
+	defer walnutJellyfin.Close()
+	cedarJellyfin.AddLibrary("lib-movies", "Movies", "movies")
+	cedarJellyfin.AddLibrary("lib-family", "Family Movies", "movies")
+	cedarJellyfin.AddUser("jellymesh", "service-user-password-for-tests", false, "lib-movies", "lib-family")
+	for index := 0; index < 5; index++ {
+		cedarJellyfin.AddItem("lib-movies", jellyfin.Item{ID: fmt.Sprintf("movie-%d", index), Name: fmt.Sprintf("Movie %d", index), Type: "Movie", Path: fmt.Sprintf("/media/movies/%d.mkv", index)})
+	}
+	cedarJellyfin.AddItem("lib-family", jellyfin.Item{ID: "family-1", Name: "Birthday", Type: "Movie", Path: "/media/family/1.mkv"})
+	walnutJellyfin.AddLibrary("lib-docs", "Documentaries", "movies")
+	walnutJellyfin.AddUser("jellymesh", "service-user-password-for-tests", false, "lib-docs")
+	walnutJellyfin.AddItem("lib-docs", jellyfin.Item{ID: "doc-1", Name: "Oceans", Type: "Movie", Path: "/media/docs/oceans.mkv"})
+
+	cedar := startDaemonWith(t, "cedar", t.TempDir(), "127.0.0.1:0", withServiceUser(cedarJellyfin, "lib-family"))
+	walnut := startDaemonWith(t, "walnut", t.TempDir(), "127.0.0.1:0", withServiceUser(walnutJellyfin))
+	cedar.must(http.MethodPost, "/admin/v1/group", FoundRequest{GroupID: "group-1"}, nil)
+	cedar.must(http.MethodPost, "/admin/v1/publications", PublishRequest{LibraryID: "lib-movies", Roots: []string{"/media/movies"}}, nil)
+	if status := cedar.call(http.MethodPost, "/admin/v1/publications", PublishRequest{LibraryID: "lib-family", Roots: []string{"/media/family"}}, nil); status == http.StatusOK {
+		t.Fatal("a protected library must not be publishable")
+	}
+
+	// walnut has nothing to offer until it publishes.
+	var invitation InviteResponse
+	cedar.must(http.MethodPost, "/admin/v1/invitations", InviteRequest{ValidForSeconds: 3600}, &invitation)
+	if status := walnut.call(http.MethodPost, "/admin/v1/join/redeem", RedeemAdminRequest{ShortCode: invitation.ShortCode, Address: invitation.Address}, nil); status == http.StatusOK {
+		t.Fatal("a node that publishes nothing must not be able to redeem")
+	}
+	walnut.must(http.MethodPost, "/admin/v1/publications", PublishRequest{LibraryID: "lib-docs", Roots: []string{"/media/docs"}}, nil)
+	joinOffering(t, cedar, walnut, cedar, nil)
+
+	walnut.catalogSync()
+	cedar.catalogSync()
+	if movies := walnut.remote()["lib-movies"]; movies.ItemsHeld != 5 || movies.SourceID != cedar.node.NodeID() {
+		t.Fatalf("walnut should hold cedar's 5 movies: %+v", movies)
+	}
+	if _, leaked := walnut.remote()["lib-family"]; leaked {
+		t.Fatal("the protected library must never reach another member")
+	}
+	if docs := cedar.remote()["lib-docs"]; docs.ItemsHeld != 1 {
+		t.Fatalf("cedar should hold walnut's documentary: %+v", docs)
+	}
+
+	walnut.must(http.MethodPut, "/admin/v1/optouts/"+cedar.node.NodeID()+"/lib-movies", nil, nil)
+	cedarJellyfin.Update("movie-1", "Edited while walnut is opted out")
+	cedar.catalogSync()
+	if result := walnut.catalogSync(); result.Sources[cedar.node.NodeID()].Dropped != 0 || result.Sources[cedar.node.NodeID()].Applied != 0 {
+		t.Fatalf("an opted-out library must not even be sent: %+v", result.Sources[cedar.node.NodeID()])
+	}
+	if movies := walnut.remote()["lib-movies"]; !movies.OptedOut || movies.ItemsHeld != 0 {
+		t.Fatalf("after opting out: %+v", movies)
+	}
+	walnut.must(http.MethodDelete, "/admin/v1/optouts/"+cedar.node.NodeID()+"/lib-movies", nil, nil)
+	walnut.catalogSync()
+	if movies := walnut.remote()["lib-movies"]; movies.OptedOut || movies.ItemsHeld != 5 {
+		t.Fatalf("after opting back in: %+v", movies)
+	}
+
+	cedar.must(http.MethodPut, "/admin/v1/blocks/"+walnut.node.NodeID(), nil, nil)
+	if result := walnut.catalogSync(); result.Failed[cedar.node.NodeID()] == "" {
+		t.Fatalf("a blocked member's catalog sync should fail: %+v", result)
+	}
+	if movies := walnut.remote()["lib-movies"]; movies.ItemsHeld != 5 {
+		t.Fatal("a failed sync keeps what walnut already holds")
+	}
+	cedar.must(http.MethodDelete, "/admin/v1/blocks/"+walnut.node.NodeID(), nil, nil)
+
+	// A block is symmetric: walnut blocking cedar stops walnut pulling from it.
+	walnut.must(http.MethodPut, "/admin/v1/blocks/"+cedar.node.NodeID(), nil, nil)
+	cedarJellyfin.Update("movie-2", "Edited while blocked")
+	cedar.catalogSync()
+	if result := walnut.catalogSync(); len(result.Sources) != 0 || len(result.Failed) != 0 {
+		t.Fatalf("walnut must not contact a source it has blocked: %+v", result)
+	}
+	walnut.must(http.MethodDelete, "/admin/v1/blocks/"+cedar.node.NodeID(), nil, nil)
+
+	cedar.must(http.MethodPost, "/admin/v1/members/"+walnut.node.NodeID()+"/eject", nil, nil)
+	cedar.catalogSync()
+	if _, held := cedar.remote()["lib-docs"]; held {
+		t.Fatal("an ejected member's publications should be gone")
+	}
+	var remaining int
+	cedar.node.database.SQL().QueryRow(`SELECT COUNT(*) FROM remote_items`).Scan(&remaining)
+	if remaining != 0 {
+		t.Fatalf("an ejected member's items should be removed, %d remain", remaining)
+	}
+
+	// C-SA-2: neither the service password nor its token was audited.
+	events, _ := store.NewAuditRepository(cedar.node.database).List(context.Background(), 1000)
+	secrets := cedar.node.jellyfin.Credentials()
+	for _, event := range events {
+		flat := event.Actor + event.Action + event.Subject
+		for _, value := range event.Detail {
+			flat += value
+		}
+		for _, secret := range secrets {
+			if secret != "" && strings.Contains(flat, secret) {
+				t.Fatalf("an audit event contains a service-user secret: %+v", event)
+			}
+		}
+	}
+	if len(events) == 0 {
+		t.Fatal("expected audit events")
 	}
 }

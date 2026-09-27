@@ -83,6 +83,13 @@ func (n *Node) AdminHandler(token string) http.Handler {
 	api.HandleFunc("PUT /admin/v1/blocks/{node}", n.adminBlock(true))
 	api.HandleFunc("DELETE /admin/v1/blocks/{node}", n.adminBlock(false))
 	api.HandleFunc("POST /admin/v1/sync", n.adminSync)
+	api.HandleFunc("GET /admin/v1/libraries", n.adminLibraries)
+	api.HandleFunc("POST /admin/v1/publications", n.adminPublish)
+	api.HandleFunc("DELETE /admin/v1/publications/{library}", n.adminUnpublish)
+	api.HandleFunc("GET /admin/v1/remote", n.adminRemote)
+	api.HandleFunc("PUT /admin/v1/optouts/{source}/{library}", n.adminOptOut(true))
+	api.HandleFunc("DELETE /admin/v1/optouts/{source}/{library}", n.adminOptOut(false))
+	api.HandleFunc("POST /admin/v1/catalog/sync", n.adminCatalogSync)
 	mux.Handle("/admin/", requireToken(token, api))
 	return mux
 }
@@ -116,6 +123,8 @@ func fail(response http.ResponseWriter, err error) {
 		status = http.StatusNotFound
 	case errors.Is(err, ErrAlreadyGroup):
 		status = http.StatusConflict
+	case errors.Is(err, ErrNoServiceUser):
+		status = http.StatusServiceUnavailable
 	}
 	writeJSON(response, status, errorBody{err.Error()})
 }
@@ -380,6 +389,69 @@ func (n *Node) adminBlock(blocked bool) http.HandlerFunc {
 
 func (n *Node) adminSync(response http.ResponseWriter, request *http.Request) {
 	result, err := n.SyncOnce(request.Context())
+	if err != nil {
+		fail(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
+}
+
+func (n *Node) adminLibraries(response http.ResponseWriter, request *http.Request) {
+	libraries, err := n.Libraries(request.Context())
+	if err != nil {
+		fail(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, libraries)
+}
+
+// PublishRequest publishes a library with its declared root paths.
+type PublishRequest struct {
+	LibraryID string   `json:"library_id"`
+	Roots     []string `json:"roots"`
+}
+
+func (n *Node) adminPublish(response http.ResponseWriter, request *http.Request) {
+	var body PublishRequest
+	if !decode(response, request, &body) {
+		return
+	}
+	if err := n.Publish(request.Context(), body.LibraryID, body.Roots); err != nil {
+		fail(response, err)
+		return
+	}
+	n.adminLibraries(response, request)
+}
+
+func (n *Node) adminUnpublish(response http.ResponseWriter, request *http.Request) {
+	if err := n.Unpublish(request.Context(), request.PathValue("library")); err != nil {
+		fail(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]string{"status": "unpublished"})
+}
+
+func (n *Node) adminRemote(response http.ResponseWriter, request *http.Request) {
+	libraries, err := n.Remote(request.Context())
+	if err != nil {
+		fail(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, libraries)
+}
+
+func (n *Node) adminOptOut(optedOut bool) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		if err := n.SetOptOut(request.Context(), request.PathValue("source"), request.PathValue("library"), optedOut); err != nil {
+			fail(response, err)
+			return
+		}
+		writeJSON(response, http.StatusOK, map[string]bool{"opted_out": optedOut})
+	}
+}
+
+func (n *Node) adminCatalogSync(response http.ResponseWriter, request *http.Request) {
+	result, err := n.SyncCatalogOnce(request.Context())
 	if err != nil {
 		fail(response, err)
 		return

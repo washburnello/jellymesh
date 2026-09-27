@@ -104,7 +104,7 @@ func TestPathsAreAbsolute(t *testing.T) {
 
 // Enabling federation without the material required to authenticate peers or
 // read published libraries should fail at load rather than at first use.
-func TestFederationRequiresHostnameAndJellyfinKey(t *testing.T) {
+func TestFederationRequiresHostnameAndServiceUser(t *testing.T) {
 	base := map[string]string{"JELLYMESH_FEDERATION_ENABLED": "true"}
 	if _, err := FromLookup(lookupFrom(base)); err == nil {
 		t.Fatal("federation without a public hostname must be rejected")
@@ -115,20 +115,36 @@ func TestFederationRequiresHostnameAndJellyfinKey(t *testing.T) {
 		"JELLYMESH_PUBLIC_HOSTNAME":    "cedar.example.org",
 	}
 	if _, err := FromLookup(lookupFrom(withHost)); err == nil {
-		t.Fatal("federation without a Jellyfin API key must be rejected")
+		t.Fatal("federation without a Jellyfin service user must be rejected")
 	}
 
 	complete := map[string]string{
-		"JELLYMESH_FEDERATION_ENABLED": "true",
-		"JELLYMESH_PUBLIC_HOSTNAME":    "cedar.example.org",
-		"JELLYMESH_JELLYFIN_API_KEY":   "secret",
+		"JELLYMESH_FEDERATION_ENABLED":  "true",
+		"JELLYMESH_PUBLIC_HOSTNAME":     "cedar.example.org",
+		"JELLYMESH_JELLYFIN_USER":       "jellymesh",
+		"JELLYMESH_JELLYFIN_PASSWORD":   " a password with spaces ",
+		"JELLYMESH_PROTECTED_LIBRARIES": "abc, def ,",
 	}
 	config, err := FromLookup(lookupFrom(complete))
 	if err != nil {
 		t.Fatalf("complete federation config should load: %v", err)
 	}
-	if !config.FederationEnabled {
-		t.Fatal("federation should be enabled")
+	if !config.FederationEnabled || config.JellyfinPassword != " a password with spaces " {
+		t.Fatalf("config = %+v", config)
+	}
+	if len(config.ProtectedLibraries) != 2 || config.ProtectedLibraries[1] != "def" {
+		t.Fatalf("protected libraries = %v", config.ProtectedLibraries)
+	}
+}
+
+// A-8: an administrator API key is refused outright, and the service user's
+// name and password come together.
+func TestAnAdministratorKeyIsRefused(t *testing.T) {
+	if _, err := FromLookup(lookupFrom(map[string]string{"JELLYMESH_JELLYFIN_API_KEY": "admin-key"})); err == nil {
+		t.Fatal("an administrator API key must be refused")
+	}
+	if _, err := FromLookup(lookupFrom(map[string]string{"JELLYMESH_JELLYFIN_USER": "jellymesh"})); err == nil {
+		t.Fatal("a user without a password must be refused")
 	}
 }
 

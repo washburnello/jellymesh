@@ -67,8 +67,13 @@ const minimumSecretLength = 8
 func (redactor *Redactor) Register(secrets ...string) {
 	redactor.mutex.Lock()
 	defer redactor.mutex.Unlock()
+	known := map[string]bool{}
+	for _, secret := range redactor.secrets {
+		known[secret] = true
+	}
 	for _, secret := range secrets {
-		if len(secret) >= minimumSecretLength {
+		if len(secret) >= minimumSecretLength && !known[secret] {
+			known[secret] = true
 			redactor.secrets = append(redactor.secrets, secret)
 		}
 	}

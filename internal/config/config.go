@@ -38,9 +38,17 @@ type Config struct {
 	// NodeCertPath is the certificate presented to peers.
 	NodeCertPath string
 
-	// JellyfinBaseURL and JellyfinAPIKey address the co-located Jellyfin.
-	JellyfinBaseURL string
-	JellyfinAPIKey  string
+	// JellyfinBaseURL addresses the co-located Jellyfin. JellyfinUser and
+	// JellyfinPassword are the dedicated non-administrator service user
+	// Jellymesh reads it as (conformance.md assumption A-8). There is
+	// deliberately no setting for an administrator API key.
+	JellyfinBaseURL  string
+	JellyfinUser     string
+	JellyfinPassword string
+
+	// ProtectedLibraries are Jellyfin library IDs that can never be
+	// published, even if the service user can see them.
+	ProtectedLibraries []string
 
 	DataDirectory     string
 	GeneratedRootPath string
@@ -103,7 +111,22 @@ func FromLookup(lookup func(string) (string, bool)) (Config, error) {
 	}
 
 	cfg.JellyfinBaseURL = strings.TrimRight(strings.TrimSpace(valueOrDefault(lookup, "JELLYMESH_JELLYFIN_URL", "http://127.0.0.1:8096")), "/")
-	cfg.JellyfinAPIKey = strings.TrimSpace(valueOrDefault(lookup, "JELLYMESH_JELLYFIN_API_KEY", ""))
+	cfg.JellyfinUser = strings.TrimSpace(valueOrDefault(lookup, "JELLYMESH_JELLYFIN_USER", ""))
+	// A password is taken exactly as given; spaces may be part of it.
+	if value, ok := lookup("JELLYMESH_JELLYFIN_PASSWORD"); ok {
+		cfg.JellyfinPassword = value
+	}
+	if _, set := lookup("JELLYMESH_JELLYFIN_API_KEY"); set {
+		return Config{}, fmt.Errorf("JELLYMESH_JELLYFIN_API_KEY is no longer supported: Jellymesh reads Jellyfin as a non-administrator service user; set JELLYMESH_JELLYFIN_USER and JELLYMESH_JELLYFIN_PASSWORD")
+	}
+	for _, id := range strings.Split(valueOrDefault(lookup, "JELLYMESH_PROTECTED_LIBRARIES", ""), ",") {
+		if id = strings.TrimSpace(id); id != "" {
+			cfg.ProtectedLibraries = append(cfg.ProtectedLibraries, id)
+		}
+	}
+	if (cfg.JellyfinUser == "") != (cfg.JellyfinPassword == "") {
+		return Config{}, fmt.Errorf("JELLYMESH_JELLYFIN_USER and JELLYMESH_JELLYFIN_PASSWORD must be set together")
+	}
 
 	federationEnabledValue := valueOrDefault(lookup, "JELLYMESH_FEDERATION_ENABLED", "false")
 	if cfg.FederationEnabled, err = strconv.ParseBool(federationEnabledValue); err != nil {
@@ -117,8 +140,8 @@ func FromLookup(lookup func(string) (string, bool)) (Config, error) {
 		if cfg.PublicHostname == "" {
 			return Config{}, fmt.Errorf("JELLYMESH_PUBLIC_HOSTNAME is required when federation is enabled")
 		}
-		if cfg.JellyfinAPIKey == "" {
-			return Config{}, fmt.Errorf("JELLYMESH_JELLYFIN_API_KEY is required when federation is enabled")
+		if cfg.JellyfinUser == "" {
+			return Config{}, fmt.Errorf("JELLYMESH_JELLYFIN_USER and JELLYMESH_JELLYFIN_PASSWORD are required when federation is enabled")
 		}
 	}
 
