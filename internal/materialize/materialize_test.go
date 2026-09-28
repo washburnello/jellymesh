@@ -6,9 +6,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"jellymesh/internal/sourcecatalog"
 	"jellymesh/internal/store"
@@ -54,7 +57,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 	t.Cleanup(func() { database.Close() })
 	f := &fixture{root: filepath.Join(base, "generated"), outside: filepath.Join(base, "precious"), records: store.NewMaterializedRepository(database), fetcher: &fetcher{}}
-	if f.material, err = New(f.root, relayURL, f.records, f.fetcher); err != nil {
+	if f.material, err = New(f.root, relayURL, f.records, store.NewWorkPinRepository(database), f.fetcher); err != nil {
 		t.Fatalf("new: %v", err)
 	}
 	os.MkdirAll(f.outside, 0o755)
@@ -387,7 +390,7 @@ func contains(values []string, want string) bool {
 }
 
 func TestAnEmptyRootIsRefused(t *testing.T) {
-	if _, err := New("  ", relayURL, nil, nil); err == nil {
+	if _, err := New("  ", relayURL, nil, nil, nil); err == nil {
 		t.Fatal("an empty generated root would resolve to the working directory and must be refused")
 	}
 }
@@ -400,5 +403,339 @@ func TestAYearIsNotRepeated(t *testing.T) {
 	}
 	if name := folderName("Probe Film", 2001, "x"); !strings.HasPrefix(name, "Probe Film (2001) [jmid-") {
 		t.Fatalf("folder name %q", name)
+	}
+}
+
+func strmFiles(files []string) []string {
+	var strm []string
+	for _, file := range files {
+		if strings.HasSuffix(file, ".strm") {
+			strm = append(strm, file)
+		}
+	}
+	return strm
+}
+
+// C-HI-6, C-MA-5: a film one source knows by TMDB and IMDb and another only by
+// IMDb is one work, and its NFO carries both identifiers whichever source
+// leads, so Jellyfin keys the item under all of them.
+func TestAFilmKnownByDifferentIdentifiersIsOneWork(t *testing.T) {
+	f := newFixture(t)
+	imdbOnly := film
+	imdbOnly.ProviderIDs = map[string]string{"Imdb": "TT0133093"}
+	f.reconcile(t, []store.RemoteItem{
+		item(t, "alder", "a-1", "lib", "Movie", imdbOnly),
+		item(t, "cedar", "c-1", "lib", "Movie", film),
+	}, everything)
+	strm := strmFiles(f.files(t))
+	if len(strm) != 2 || filepath.Dir(strm[0]) != filepath.Dir(strm[1]) {
+		t.Fatalf("both versions should share one folder: %v", strm)
+	}
+	nfo := f.read(t, filepath.Join(filepath.Dir(strm[0]), "movie.nfo"))
+	if !strings.Contains(nfo, "<tmdbid>603</tmdbid>") || !strings.Contains(nfo, "<imdbid>tt0133093</imdbid>") {
+		t.Fatalf("the NFO should carry every identifier of the work:\n%s", nfo)
+	}
+}
+
+// C-MA-5: two copies of one film from one source are two versions, never one
+// path written twice.
+func TestTwoCopiesFromOneSourceAreTwoVersions(t *testing.T) {
+	f := newFixture(t)
+	f.reconcile(t, []store.RemoteItem{
+		item(t, "cedar", "c-1", "lib", "Movie", film),
+		item(t, "cedar", "c-2", "lib", "Movie", film),
+	}, everything)
+	strm := strmFiles(f.files(t))
+	if len(strm) != 2 || strm[0] == strm[1] || filepath.Dir(strm[0]) != filepath.Dir(strm[1]) {
+		t.Fatalf("two versions in one folder expected: %v", strm)
+	}
+	sort.Slice(strm, func(i, j int) bool { return len(strm[i]) < len(strm[j]) })
+	if !strings.HasSuffix(strm[0], " - Cedar.strm") || !strings.HasSuffix(strm[1], " - Cedar 2.strm") {
+		t.Fatalf("versions should be labelled apart: %v", strm)
+	}
+	records, _ := f.records.All(context.Background())
+	if len(records) != 2 || records[0].Reference == records[1].Reference {
+		t.Fatalf("each copy needs its own reference: %+v", records)
+	}
+}
+
+type show struct {
+	source, id string
+	ids        map[string]string
+	episodes   [][2]int
+}
+
+func showItems(t *testing.T, shows ...show) []store.RemoteItem {
+	t.Helper()
+	var items []store.RemoteItem
+	for _, s := range shows {
+		items = append(items, item(t, s.source, s.id, "lib-tv", "Series", sourcecatalog.Metadata{Name: "Probe Show", Year: 2019, ProviderIDs: s.ids}))
+		for _, number := range s.episodes {
+			items = append(items, item(t, s.source, s.id+"-"+strconv.Itoa(number[0])+"x"+strconv.Itoa(number[1]), "lib-tv", "Episode", sourcecatalog.Metadata{
+				Name: "Episode", SeriesID: s.id, ParentIndexNumber: intPointer(number[0]), IndexNumber: intPointer(number[1])}))
+		}
+	}
+	return items
+}
+
+func (f *fixture) playing(t *testing.T) map[string]string {
+	t.Helper()
+	records, err := f.records.All(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := map[string]string{}
+	for _, record := range records {
+		by[record.Path] = record.SourceNodeID
+	}
+	return by
+}
+
+// C-HI-6, C-MA-6: a series two sources know by a shared identifier is one
+// show, holding the episodes of both, with one file per episode addressed by
+// the series work, season, and episode number.
+func TestASeriesFromTwoSourcesIsOneShow(t *testing.T) {
+	f := newFixture(t)
+	f.reconcile(t, showItems(t,
+		show{"cedar", "s", map[string]string{"Tvdb": "81189"}, [][2]int{{1, 1}, {1, 2}}},
+		show{"walnut", "s", map[string]string{"Tvdb": "81189", "Tmdb": "1396"}, [][2]int{{1, 2}, {1, 3}, {2, 1}}},
+	), everything)
+	playing := f.playing(t)
+	if len(playing) != 4 {
+		t.Fatalf("four episodes, one file each, expected: %v", playing)
+	}
+	var folder string
+	for path := range playing {
+		series := strings.SplitN(path, "/", 3)[1]
+		if folder != "" && series != folder {
+			t.Fatalf("episodes are split across show folders: %v", playing)
+		}
+		folder = series
+	}
+	nfo := f.read(t, filepath.Join(ShowsFolder, folder, "tvshow.nfo"))
+	if !strings.Contains(nfo, "<tvdbid>81189</tvdbid>") || !strings.Contains(nfo, "<tmdbid>1396</tmdbid>") {
+		t.Fatalf("the show NFO should carry every identifier of the work:\n%s", nfo)
+	}
+	second := filepath.Join(ShowsFolder, folder, "Season 01", "Probe Show S01E02.strm")
+	if playing[second] != "cedar" {
+		t.Fatalf("an episode both sources hold plays from the first source: %v", playing)
+	}
+	if _, ok := playing[filepath.Join(ShowsFolder, folder, "Season 02", "Probe Show S02E01.strm")]; !ok {
+		t.Fatalf("season two is missing: %v", playing)
+	}
+}
+
+// A-13: once an episode plays from a source, another source arriving with it
+// does not displace it; when that source withdraws, the other takes its
+// place at the same path.
+func TestAnEpisodeKeepsItsSourceUntilItGoes(t *testing.T) {
+	f := newFixture(t)
+	walnut := show{"walnut", "s", map[string]string{"Tvdb": "81189"}, [][2]int{{1, 1}}}
+	cedar := show{"cedar", "s", map[string]string{"Tvdb": "81189"}, [][2]int{{1, 1}}}
+	f.reconcile(t, showItems(t, walnut), everything)
+	before := f.playing(t)
+	f.reconcile(t, showItems(t, walnut, cedar), everything)
+	if after := f.playing(t); !reflect.DeepEqual(before, after) {
+		t.Fatalf("a new source displaced the one playing: %v then %v", before, after)
+	}
+	f.reconcile(t, showItems(t, cedar), everything)
+	after := f.playing(t)
+	if len(after) != 1 {
+		t.Fatalf("one episode expected: %v", after)
+	}
+	for path, source := range after {
+		if _, same := before[path]; !same || source != "cedar" {
+			t.Fatalf("the remaining source should take the same path: %v then %v", before, after)
+		}
+	}
+}
+
+// C-HI-6: series with no strong identity, or with different ones, stay apart
+// even under one title, and so do their episodes.
+func TestSeriesWithoutASharedIdentityStayApart(t *testing.T) {
+	f := newFixture(t)
+	f.reconcile(t, showItems(t,
+		show{"cedar", "s", nil, [][2]int{{1, 1}}},
+		show{"walnut", "s", nil, [][2]int{{1, 1}}},
+		show{"alder", "s", map[string]string{"Tvdb": "1"}, [][2]int{{1, 1}}},
+		show{"birch", "s", map[string]string{"Tvdb": "2"}, [][2]int{{1, 1}}},
+	), everything)
+	folders := map[string]bool{}
+	for path := range f.playing(t) {
+		folders[strings.SplitN(path, "/", 3)[1]] = true
+	}
+	if len(folders) != 4 {
+		t.Fatalf("four separate shows expected: %v", folders)
+	}
+}
+
+// C-HI-5: a work purged and returning from another source is written under
+// identifiers it had before, which is what Jellyfin restores a user's state
+// by (conformance M-10); nothing of the purged item is left behind.
+func TestAReturningWorkCarriesItsIdentifiers(t *testing.T) {
+	f := newFixture(t)
+	f.reconcile(t, []store.RemoteItem{item(t, "cedar", "c-1", "lib", "Movie", film)}, everything)
+	f.reconcile(t, nil, everything)
+	if remaining := f.files(t); len(remaining) != 0 {
+		t.Fatalf("a purged work left files: %v", remaining)
+	}
+	returning := film
+	returning.ProviderIDs = map[string]string{"Imdb": "tt0133093"}
+	f.reconcile(t, []store.RemoteItem{item(t, "walnut", "w-7", "lib", "Movie", returning)}, everything)
+	strm := strmFiles(f.files(t))
+	if len(strm) != 1 {
+		t.Fatalf("the returning work should be one item: %v", strm)
+	}
+	if nfo := f.read(t, filepath.Join(filepath.Dir(strm[0]), "movie.nfo")); !strings.Contains(nfo, "<imdbid>tt0133093</imdbid>") {
+		t.Fatalf("the returning work lost its identifier:\n%s", nfo)
+	}
+}
+
+// C-MA-6: episodes without numbers are never grouped, and two of one title
+// still get a file each.
+func TestUnnumberedEpisodesKeepAFileEach(t *testing.T) {
+	f := newFixture(t)
+	items := showItems(t, show{"cedar", "s", map[string]string{"Tvdb": "81189"}, nil})
+	for _, id := range []string{"x-1", "x-2"} {
+		items = append(items, item(t, "cedar", id, "lib-tv", "Episode", sourcecatalog.Metadata{Name: "Special", SeriesID: "s"}))
+	}
+	f.reconcile(t, items, everything)
+	if playing := f.playing(t); len(playing) != 2 {
+		t.Fatalf("two unnumbered episodes need two files: %v", playing)
+	}
+}
+
+func (f *fixture) folderOf(t *testing.T, collection string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(f.root, collection))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var folders []string
+	for _, entry := range entries {
+		folders = append(folders, entry.Name())
+	}
+	return folders
+}
+
+// A-14, C-HI-5: a show keeps the folder and identifiers it was first
+// materialized under when a source that knows it by another identifier
+// joins, because Jellyfin keys episode state under the show's preferred
+// identifier and a changed folder is a new item.
+func TestAShowKeepsItsFolderAndIdentifiersWhenASourceAddsOne(t *testing.T) {
+	f := newFixture(t)
+	cedar := show{"cedar", "s", map[string]string{"Tmdb": "1396"}, [][2]int{{1, 1}}}
+	walnut := show{"walnut", "s", map[string]string{"Tmdb": "1396", "Tvdb": "81189"}, [][2]int{{1, 1}, {1, 2}}}
+	f.reconcile(t, showItems(t, cedar), everything)
+	before := f.folderOf(t, ShowsFolder)
+	f.reconcile(t, showItems(t, cedar, walnut), everything)
+	after := f.folderOf(t, ShowsFolder)
+	if len(before) != 1 || !reflect.DeepEqual(before, after) {
+		t.Fatalf("the show moved: %v then %v", before, after)
+	}
+	nfo := f.read(t, filepath.Join(ShowsFolder, after[0], "tvshow.nfo"))
+	if strings.Contains(nfo, "81189") || !strings.Contains(nfo, "<tmdbid>1396</tmdbid>") {
+		t.Fatalf("the show should keep exactly the identifiers it was pinned with:\n%s", nfo)
+	}
+	if playing := f.playing(t); len(playing) != 2 {
+		t.Fatalf("both sources' episodes belong to the one show: %v", playing)
+	}
+}
+
+// A-14, C-HI-5: a work withdrawn and returning, from another source that
+// knows it by more identifiers, comes back to the folder it had.
+func TestAReturningWorkComesBackToItsFolder(t *testing.T) {
+	f := newFixture(t)
+	imdbOnly := film
+	imdbOnly.ProviderIDs = map[string]string{"Imdb": "tt0133093"}
+	f.reconcile(t, append(showItems(t, show{"cedar", "s", map[string]string{"Tmdb": "1396"}, [][2]int{{1, 1}}}),
+		item(t, "cedar", "c-1", "lib", "Movie", imdbOnly)), everything)
+	movies, shows := f.folderOf(t, MoviesFolder), f.folderOf(t, ShowsFolder)
+	f.reconcile(t, nil, everything)
+	f.reconcile(t, append(showItems(t, show{"walnut", "s", map[string]string{"Tmdb": "1396", "Tvdb": "81189"}, [][2]int{{1, 1}}}),
+		item(t, "walnut", "w-1", "lib", "Movie", film)), everything)
+	if got := f.folderOf(t, MoviesFolder); !reflect.DeepEqual(got, movies) {
+		t.Fatalf("the film returned elsewhere: %v then %v", movies, got)
+	}
+	if got := f.folderOf(t, ShowsFolder); !reflect.DeepEqual(got, shows) {
+		t.Fatalf("the show returned elsewhere: %v then %v", shows, got)
+	}
+}
+
+// A-14: a pin lasts while its work is materialized and for PinRetention
+// after, and is then forgotten.
+func TestPinsLastForTheRetentionPeriod(t *testing.T) {
+	f := newFixture(t)
+	start := time.Now()
+	at := func(days int) {
+		f.material.now = func() time.Time { return start.Add(time.Duration(days) * 24 * time.Hour) }
+	}
+	imdbOnly := film
+	imdbOnly.ProviderIDs = map[string]string{"Imdb": "tt0133093"}
+	held := []store.RemoteItem{item(t, "cedar", "c-1", "lib", "Movie", imdbOnly)}
+	returning := []store.RemoteItem{item(t, "walnut", "w-1", "lib", "Movie", film)}
+
+	at(0)
+	f.reconcile(t, held, everything)
+	pinned := f.folderOf(t, MoviesFolder)
+	at(80)
+	f.reconcile(t, held, everything) // in use, so kept alive
+	at(81)
+	f.reconcile(t, nil, everything)
+	at(160)
+	f.reconcile(t, returning, everything)
+	if got := f.folderOf(t, MoviesFolder); !reflect.DeepEqual(got, pinned) {
+		t.Fatalf("a pin in use within the period was lost: %v then %v", pinned, got)
+	}
+	at(161)
+	f.reconcile(t, nil, everything)
+	at(161 + 91)
+	f.reconcile(t, returning, everything)
+	if got := f.folderOf(t, MoviesFolder); reflect.DeepEqual(got, pinned) {
+		t.Fatalf("a pin outlived the retention period: %v", got)
+	}
+}
+
+// A-14: a pin joins the items it was made for when they no longer share an
+// identifier among themselves, and never takes in a work that disagrees
+// with it.
+func TestAPinHoldsItsWorkTogether(t *testing.T) {
+	f := newFixture(t)
+	f.reconcile(t, []store.RemoteItem{item(t, "cedar", "c-1", "lib", "Movie", film)}, everything)
+	pinned := f.folderOf(t, MoviesFolder)
+	tmdbOnly, imdbOnly, other := film, film, film
+	tmdbOnly.ProviderIDs = map[string]string{"Tmdb": "603"}
+	imdbOnly.ProviderIDs = map[string]string{"Imdb": "tt0133093"}
+	other.ProviderIDs = map[string]string{"Tmdb": "603", "Imdb": "tt9999999"}
+	f.reconcile(t, []store.RemoteItem{
+		item(t, "alder", "a-1", "lib", "Movie", tmdbOnly),
+		item(t, "birch", "b-1", "lib", "Movie", imdbOnly),
+	}, everything)
+	if got := f.folderOf(t, MoviesFolder); !reflect.DeepEqual(got, pinned) {
+		t.Fatalf("the pin should hold both items in its folder: %v then %v", pinned, got)
+	}
+	f.reconcile(t, []store.RemoteItem{item(t, "walnut", "w-1", "lib", "Movie", other)}, everything)
+	if got := f.folderOf(t, MoviesFolder); len(got) != 1 || reflect.DeepEqual(got, pinned) {
+		t.Fatalf("a work that disagrees with the pin must get its own folder: %v", got)
+	}
+}
+
+// C-HI-6: TMDB numbers films and shows separately, so a film and a show with
+// one number are different works, and a film's pin never places a show.
+func TestAFilmAndAShowWithOneNumberStayApart(t *testing.T) {
+	f := newFixture(t)
+	numbered := film
+	numbered.ProviderIDs = map[string]string{"Tmdb": "1396"}
+	items := append(showItems(t, show{"cedar", "s", map[string]string{"Tmdb": "1396"}, [][2]int{{1, 1}}}),
+		item(t, "cedar", "c-1", "lib", "Movie", numbered))
+	f.reconcile(t, items[2:], everything) // the film first, so its pin exists
+	f.reconcile(t, items, everything)
+	for path := range f.playing(t) {
+		if strings.HasSuffix(path, "S01E01.strm") && !strings.HasPrefix(path, ShowsFolder+"/") {
+			t.Fatalf("the episode was filed with the film: %s", path)
+		}
+	}
+	if len(f.folderOf(t, ShowsFolder)) != 1 || len(f.folderOf(t, MoviesFolder)) != 1 {
+		t.Fatal("one film folder and one show folder expected")
 	}
 }

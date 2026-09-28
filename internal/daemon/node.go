@@ -154,7 +154,7 @@ func Open(ctx context.Context, cfg config.Config, logger *log.Logger) (*Node, er
 		n.source = sourcecatalog.New(n.jellyfin, store.NewSourceCatalogRepository(database), cfg.ProtectedLibraries, n.audit)
 	}
 	n.materialized = store.NewMaterializedRepository(database)
-	if n.materializer, err = materialize.New(cfg.GeneratedRootPath, cfg.RelayURL, n.materialized, sourceAccess{n}); err != nil {
+	if n.materializer, err = materialize.New(cfg.GeneratedRootPath, cfg.RelayURL, n.materialized, store.NewWorkPinRepository(database), sourceAccess{n}); err != nil {
 		database.Close()
 		return nil, err
 	}

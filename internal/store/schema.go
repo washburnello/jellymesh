@@ -317,6 +317,22 @@ var migrations = []string{
 	`
 	ALTER TABLE materialized ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;
 	`,
+
+	// 13: the folder and identifiers each work was first materialized under.
+	// Jellyfin keys a user's state for an item under its path and provider
+	// identifiers, so a work keeps both for as long as it is materialized,
+	// and for as long after as Jellyfin keeps state it can reattach
+	// (conformance M-10, assumption A-14).
+	`
+	CREATE TABLE work_pins (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		kind        TEXT NOT NULL,
+		folder      TEXT NOT NULL UNIQUE,
+		identifiers TEXT NOT NULL,
+		created_at  TEXT NOT NULL,
+		last_used   TEXT NOT NULL
+	);
+	`,
 }
 
 func (database *DB) migrate(ctx context.Context) error {

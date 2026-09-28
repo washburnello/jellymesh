@@ -50,7 +50,8 @@ In a container deployment, prefix each command with `docker compose exec jellyme
 - Phase 0 lab scaffolding is present under `lab/`.
 - A Go Jellymesh Service skeleton is present under `cmd/jellymesh/` and `internal/`. Its only dependency is the pure-Go SQLite driver `modernc.org/sqlite`.
 - The policy core under `internal/policy/` models a node's own opt-in publication, automatic destination availability, explicit per-library opt-out, symmetric peer blocks, and the invitations it issues, consulting the replicated roster for membership.
-- The history ledger model under `internal/history/` preserves per-user watched state, play counts, and resume positions across generated-content cleanup.
+- Watched state, resume positions, and favourites are Jellyfin's own, per local user. Jellyfin keeps a removed item's state and restores it when the work returns, so the materializer keeps each work's folder and identifiers stable for 90 days after it was last materialized (assumption A-14). The ledger model under `internal/history/` is a tested primitive that is not in that path.
+- The materializer under `internal/materialize/` groups works across sources on shared TMDB, TVDB, or IMDb identifiers: a film is one item with a version per source, and a series is one show whose episodes each play from one source (assumptions A-11, A-13). A film held locally and remotely shows twice (A-15).
 - The retention store under `internal/catalog/` keeps deletion metadata/artwork identity available for a configurable grace period, defaulting to 7 days.
 - The sync policy under `internal/syncpolicy/` defaults to 5-minute health heartbeats and hourly incremental catalog sync with bounded backoff.
 - The resource policy under `internal/limits/` defaults to one concurrent remote transcode per destination while leaving direct play unrestricted.

@@ -137,8 +137,8 @@ findings in [plan-review.md](plan-review.md).
 | C-HI-2 | Restoration fills only missing fields and never overwrites newer local progress | `TestMergePreservesLocalProgress`, `TestRestoreDoesNotLetTheLedgerBeatNewerLocalProgress` | PASS |
 | C-HI-3 | A deliberate un-watch is never resurrected by the ledger | `TestMergeDoesNotResurrectDeliberateUnwatch` | PASS |
 | C-HI-4 | Restoration actually applies when the local server holds no state for a work | `TestRestoreFillsGapsWhenLocalHasNothing`, `TestMergeStillRestoresWhenLocalHasNoRecord` | PASS |
-| C-HI-5 | Generated content can be purged without losing per-user watched state, play count, or resume position | `TestRestoreWithNoPreservedRowReturnsLocalUnchanged`, `TestRetentionRepositoryRecordDeletionRoundTrip`, `TestReturningItemDiscardsRetention` | PARTIAL — the ledger and retention halves are proven; the purge path that drives them does not exist yet |
-| C-HI-6 | Works are merged only on strong provider identity; title and year alone never merge | `TestStrongIdentityMatch`, `TestDifferentStrongIdentitiesDoNotMatch` | PARTIAL — the identity primitive is proven; it has no episode addressing, see plan-review D6 |
+| C-HI-5 | Generated content can be purged without losing per-user watched state, play count, or resume position | `TestAReturningWorkCarriesItsIdentifiers`, `TestAReturningWorkComesBackToItsFolder`, `TestAShowKeepsItsFolderAndIdentifiersWhenASourceAddsOne`, `TestPinsLastForTheRetentionPeriod`, `TestWorkPinsRoundTripTouchAndPrune`, M-10 | PASS — Jellyfin itself keeps a withdrawn item's per-user state and reattaches it to an item that returns under a shared identifier (M-10); Jellymesh keeps each work's folder and identifiers stable so that it does. Bounds in assumption A-14 |
+| C-HI-6 | Works are merged only on strong provider identity; title and year alone never merge | `TestStrongIdentityMatch`, `TestDifferentStrongIdentitiesDoNotMatch`, `TestWorksJoinOnASharedIdentifier`, `TestWorksNeverJoinAcrossAConflict`, `TestOnlyStrongIdentifiersGroup`, `TestMoviesWithoutAStrongIdentityStaySeparate`, `TestSeriesWithoutASharedIdentityStayApart`, `TestAFilmAndAShowWithOneNumberStayApart`, `TestAPinHoldsItsWorkTogether` | PASS — items are one work when they share a TMDB, TVDB, or IMDb identifier and disagree on none, films and series separately; episodes are addressed by series work, season, and episode number (C-MA-6) |
 
 ## 8. Privacy, materialization, playback, and operations
 
@@ -158,7 +158,8 @@ rather than implied.
 | C-PB-2 | An unavailable source fails playback cleanly, as a 502 with a plain reason, without destructive catalog pruning | `TestAnUnreachableSourceFailsCleanly`, `TestAFailedSyncKeepsKnownGoodState` | PASS |
 | C-PB-3 | A source enforces a bandwidth ceiling per destination, shared by all of that destination's streams | `TestTheCeilingBoundsADestinationsStreamsTogether` | PASS |
 | C-MA-4 | Removing a generated item revokes its relay reference first, deletes only its own files and only inside the generated root, drops a folder with nothing left to play, and does not disturb other versions | `TestRemovalRevokesAndStaysInsideTheRoot`, `TestEpisodesAreLaidOutBySeriesAndSeason` | PASS |
-| C-MA-5 | A movie with a strong identity from several sources is materialized in one folder with one source-named file per source, and a movie without one never shares a folder | `TestAMovieFromTwoSourcesSharesAFolder`, `TestMoviesWithoutAStrongIdentityStaySeparate`, `TestVersionLabelsAreDistinct` | PASS |
+| C-MA-5 | A movie with a strong identity from several sources is materialized in one folder with one source-named file per source, and a movie without one never shares a folder | `TestAMovieFromTwoSourcesSharesAFolder`, `TestMoviesWithoutAStrongIdentityStaySeparate`, `TestVersionLabelsAreDistinct`, `TestAFilmKnownByDifferentIdentifiersIsOneWork`, `TestTwoCopiesFromOneSourceAreTwoVersions` | PASS — the NFO carries every identifier of the work, and two copies from one source are labelled apart |
+| C-MA-6 | A series with a shared strong identity from several sources is one show holding every source's episodes; each episode, addressed by series work, season, and episode number, has one file from one source, which keeps its place until it goes; unnumbered episodes are never grouped | `TestASeriesFromTwoSourcesIsOneShow`, `TestAnEpisodeKeepsItsSourceUntilItGoes`, `TestUnnumberedEpisodesKeepAFileEach`, `TestSeriesWithoutASharedIdentityStayApart` | PASS — one file per episode because Jellyfin shows no episode versions (M-10, A-13) |
 | C-PB-4 | A stream above a destination's bandwidth ceiling is served as a source-side transcode rather than throttled | none yet | PENDING — the second half of assumption A-1 |
 | C-PB-5 | Jellyfin's repeated probe of a remote item on every PlaybackInfo does not repeatedly cross the source's uplink: the relay answers from a per-revision head cache, confirms each hit with a bodiless HEAD so the source still authorizes every request, and stitches exactly past the head | `TestRepeatedProbesAreServedFromTheHead`, `TestRangesInsideTheHeadAndHeadRequestsStayLocal`, `TestARangePastTheHeadIsStitchedExactly`, `TestTheHeadIsTiedToOneRevisionOfOneFile`, `TestACachedHeadIsNotServedOnceTheSourceRefuses`, `TestTheCacheIsBoundedAndRemovable` | PASS |
 | C-OP-1 | Audit events are recorded with secrets redacted: detail outside an allow-list of identifiers and outcomes is replaced, registered secret material is scrubbed from every field, and enrollment, group log changes including equivocation, and block decisions are audited without the invitation secret appearing in any encoding | `TestSecretsNeverReachTheSink`, `TestEnrollmentIsAuditedWithoutSecrets`, `TestGroupChangesAreAudited`, `TestBlockDecisionsAreAudited`, `TestAuditRepositoryRoundTrip` | PASS |
@@ -203,6 +204,8 @@ assumed shape is a separate `Friends Music` library so the duplication is
 contained rather than polluting the local artist list.
 
 **A-4. Integrated versus separate libraries (plan-review A1, A2).**
+Superseded in part by A-11 and A-15: versions are grouped by file naming,
+and the merge API is not used, since a non-administrator cannot call it.
 Assumed: generated roots are added to the destination's existing libraries per
 collection type, and Jellymesh actively drives and maintains version merges
 through the Jellyfin merge API. Rationale: the extraction risk that argued
@@ -284,7 +287,8 @@ with a strong identity shares one folder across sources, with files named
 Rationale: confirmed on 10.11.11 in M-8. It also delivers source-labelled
 versions without the administrator-only merge API that A-4 anticipated.
 Cost: merging a remote version with a local copy of the same film still
-needs that API, and is left to Phase 4.
+needs that API; see A-15. Series are grouped across sources too, with one
+file per episode (A-13).
 
 **A-12. Detection by Jellyfin's scheduled scan.**
 Assumed: Jellymesh sends Jellyfin a best-effort change notice and relies on
@@ -294,6 +298,57 @@ monitor did not fire in the lab (M-8). Holding an administrator credential
 to force a refresh would undo A-8.
 Cost: a new remote item appears only at the next scan. A withdrawn one stops
 being playable at once but stays listed until then.
+
+**A-13. One source per episode (C-MA-6).**
+Assumed: each episode of a show is materialized from one source. The source
+already playing it keeps it while it remains consumable; otherwise the first
+by source node and item ID is chosen. The file name carries no source, so a
+change of source keeps the episode's path.
+Rationale: Jellyfin 10.11.11 shows episode files from two sources as two
+episodes, whether named `<episode> - <source>`, in a folder per episode, or
+`<episode> [<source>]` (M-10). Two items for one episode would also share a
+key under which Jellyfin retains state (A-14). This departs from design-spec
+section 10's rule that Jellymesh never prefers one source's version, which
+holds for films only.
+Cost: a viewer cannot pick an episode's source, and a source that is a
+member but unreachable keeps its episodes until it withdraws them; failing
+over on health is Phase 6 work.
+
+**A-14. History is Jellyfin's, kept stable by Jellymesh (C-HI-5).**
+Assumed: Jellyfin's own per-user state is the history. When an item is
+removed, Jellyfin 10.11 detaches its users' state and reattaches it to an
+item that appears with a shared identifier: watched state, play count,
+resume position, and favourites came back for films returning under another
+folder and source, IMDb-only films, films whose identifiers grew or shrank,
+and episodes, across clean-up tasks and a restart (M-10). Jellymesh's part is
+to keep what Jellyfin keys on stable. A work keeps the folder it was first
+materialized under, and a show keeps exactly the identifiers it was first
+written with, for as long as it is materialized and 90 days after
+(`PinRetention`). A pin takes part in grouping, so it holds together items
+that no longer share an identifier among themselves.
+Rationale: the design-spec's ledger would need every local user's state,
+which a non-administrator service user cannot read or write (A-8), and M-10
+showed Jellyfin already does the job. The ledger package (`internal/history`,
+C-HI-1 to C-HI-4) stays as a tested primitive but is not in the path.
+Cost, and the bounds of C-HI-5: Jellyfin keys episode state under the
+series' TVDB identifier before its TMDB one, so a show first written without
+TVDB keeps being written without it. State is not restored for a work that
+returns after its pin has expired, after an administrator has run Jellyfin's
+unscheduled user-data clean-up task (which deletes state detached for over 90
+days), or with none of its earlier identifiers. When two works that were
+separate are found to be one, the older folder is kept and state held under
+the younger one's identifiers is not carried over.
+
+**A-15. Remote copies are not merged with local copies (C-HI-5).**
+Assumed: a remote film that the destination also holds locally is a second
+item beside the local one, with its own per-user state.
+Rationale: merging needs `POST /Videos/MergeVersions`, which answers 403 to
+a non-administrator (M-10), and holding an administrator credential would
+undo A-8. Jellyfin's automatic series grouping hid the second series card in
+the lab but its episodes were not listed under the remaining card, so it is
+not relied on either.
+Cost: a film held locally and remotely shows twice, and watching one does
+not mark the other.
 
 **A-5. Group state replication (C-PO-14 to C-PO-20, C-TR-9).**
 Assumed: group state (owner, epoch, administrators, the roster bound to
@@ -331,3 +386,4 @@ Not provable by unit test. These are the Phase 5 gates.
 | M-7 | The source adapter's routes and fields behave against real Jellyfin 10.11.11 as the fake assumes: `/UserViews`, `/Items` with `ParentId` paging and the `Path` and `Etag` fields, `/Items/{id}/Ancestors`, an administrator route refused, and token refusal leading to re-authentication, for a non-administrator user | Docker | Performed 2026-09-27 with `lab/adaptercheck/run-throwaway.sh`: a fresh container, metadata fetchers off, two granted libraries and one withheld. All 13 checks passed; the withheld library was invisible. Repeat on every Jellyfin upgrade |
 | M-8 | Jellyfin 10.11.11 treats generated artifacts as the layout assumes, and a non-administrator can use the source media routes | Docker | Performed 2026-09-28 with `lab/materializecheck/run-throwaway.sh`. The title and year come from the NFO. A `[jmid-…]` folder tag stays out of the name. Only the legacy `<tmdbid>` NFO element sets the provider ID. Dot-prefixed temporary files are ignored. Two `<folder> - <source>.strm` files make one item with versions labelled by source. A sidecar `.srt` attaches to its version. A non-administrator gets 403 from `/Library/Refresh` and `/Items/{library}/Refresh`, 204 but no effect from `/Library/Media/Updated`, and 206 with ranges from `/Videos/{id}/stream?static=true`. HEAD returns length and type, and the subtitle route returns 200. The real-time monitor did not detect new content within 150 s, even a real `.mkv` on btrfs after a restart. Repeat on every Jellyfin upgrade |
 | M-9 | The whole playback chain works against real Jellyfin 10.11.11 in the container deployment: a source Jellyfin, a destination Jellyfin, and two Jellymesh nodes from the current image on one Docker network | Docker | Performed 2026-09-28 with `lab/playcheck/run-throwaway.sh`. walnut joined cedar's group by short code and materialized cedar's film with its subtitle. After a scan, the destination Jellyfin showed the NFO's title, year, overview, and provider ID, and the external subtitle. The version's path was the local relay URL, and `PlaybackInfo` named no peer. Jellyfin streamed the source's exact bytes through the relay for a 100-byte range and for the whole 3,000,000-byte file. The run found and fixed a repeated year in folder names. Repeat on every Jellyfin upgrade |
+| M-10 | Jellyfin 10.11.11 keys per-user state as A-13, A-14, and A-15 assume | Docker | Performed 2026-09-28 with `lab/identitycheck/run-throwaway.sh`: a fresh container, metadata fetchers off, each library holding a local and a generated root. Watched state, play count, resume position, and favourites survived withdrawal, a scan, the clean-up tasks, and a restart, returning under a new folder and source for films (TMDB, IMDb-only, identifiers grown or shrunk) and for episodes; a film returning with a different identifier started fresh. Episodes lost their state when the returning show gained a TVDB identifier, and kept it when it gained TMDB. A local copy and a generated copy of one work kept separate state. Episode files from two sources became two episodes under all three namings tried. Two watched generated copies withdrawn in one scan did not abort it. A non-administrator got 403 from `/Videos/MergeVersions`. A first run that gave two libraries the same identifiers lost one library's episode state, which is why one work must be one item. Repeat on every Jellyfin upgrade |

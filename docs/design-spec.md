@@ -746,7 +746,7 @@ The implementation must not assume that filename and NFO behavior alone guarante
 
 The server name is represented first in the native version label. Standard metadata fields can be used as fallbacks after client testing. A circular avatar is optional and must not compromise the stock-client guarantee.
 
-Deduplication is identity-first. Jellymesh may merge source media into one logical work only when strong identity matches, such as the same media type plus TMDB, TVDB, IMDb, or MusicBrainz identifier. Title/year matches are insufficient and remain separate. Jellymesh must not automatically prefer one source’s version; native Jellyfin version selection remains the user-facing control.
+Deduplication is identity-first. Jellymesh may merge source media into one logical work only when strong identity matches, such as the same media type plus TMDB, TVDB, IMDb, or MusicBrainz identifier. Title/year matches are insufficient and remain separate. Jellymesh must not automatically prefer one source’s version of a film; native Jellyfin version selection remains the user-facing control. Episodes are the exception: Jellyfin shows no episode versions, so each episode plays from one chosen source (conformance A-13).
 
 ### Generated content and history preservation
 
@@ -776,6 +776,37 @@ last_played_at
 The logical work identity should use strong metadata such as TMDB, TVDB, IMDb, or MusicBrainz where available. When the same work later returns from another server, a different Jellymesh library, or a local copy, the ledger can reapply the local user’s watched state, play count, and resume position. Existing local state is authoritative: Jellymesh fills only missing fields and never overwrites newer local progress. The broader history model may later include favorites and ratings, but those are not required for the first restoration path. If no reliable logical identity exists, Jellymesh must not guess based only on title and year.
 
 Group dissolution or source ejection may purge generated references immediately while retaining the history ledger. The retention record for a source deletion is purged only after the configured grace period if the item does not return. Local Jellyfin user data remains the source of truth while the ledger provides restoration across generated-item removal and reappearance.
+
+
+#### History as implemented (Phase 4, A-14)
+
+Status: assumed (conformance.md A-14 and A-15), 2026-09-28, on a probe of
+Jellyfin 10.11.11 recorded as conformance M-10
+(`lab/identitycheck/run-throwaway.sh`).
+
+The ledger described above is not built. It would need to read and write
+every local user's state, which a non-administrator service user cannot do
+(A-8), and Jellyfin already does the job: when an item is removed it detaches
+its users' state, and reattaches it to an item that appears with a shared
+identifier. Watched state, play count, resume position, and favourites came
+back for films returning under another folder and source, and for episodes,
+across a restart. Jellyfin's state is also per local user, which is what
+C-HI-1 asks.
+
+What Jellymesh must do is keep what Jellyfin keys on stable:
+
+- one work is one item, since two items with one key share a single retained
+  row (M-10);
+- a work keeps its folder, since a new path is a new item;
+- a show keeps the identifiers it was first written with, since Jellyfin keys
+  episode state under the series' TVDB identifier before its TMDB one and a
+  show that gained TVDB lost its episodes' state in the lab.
+
+Work pins (store table `work_pins`) hold both for as long as a work is
+materialized and for 90 days after, matching the age after which Jellyfin's
+clean-up task may delete detached state. That task has no default trigger.
+Local and remote copies of one film stay separate items with separate state
+(A-15), because the merge API refuses a non-administrator.
 
 ## 11. Playback
 
@@ -822,10 +853,11 @@ operator adds each root to the matching existing Jellyfin library once:
     <Title> (<Year>) [jmid-<id>] - Cedar.en.srt
     <Title> (<Year>) [jmid-<id>] - Walnut.strm
     poster.jpg
-<generated>/TV Shows/<Series> [jmid-<id>]/
+<generated>/TV Shows/<Series> (<Year>) [jmid-<id>]/
     tvshow.nfo
-    Season 01/<Series> S01E01 - Cedar.strm
-    Season 01/<Series> S01E01 - Cedar.nfo
+    poster.jpg
+    Season 01/<Series> S01E01.strm
+    Season 01/<Series> S01E01.nfo
 ```
 
 - **Folder IDs.** `<id>` is a Jellymesh-internal identifier derived from the
@@ -834,12 +866,27 @@ operator adds each root to the matching existing Jellyfin library once:
   library. Provider identifiers go in the NFO only, as both `<uniqueid>` and
   the legacy `<tmdbid>`, `<imdbid>`, `<tvdbid>` elements, because on 10.11.11
   only the legacy elements took effect.
-- **Versions.** A movie with a strong identity shares one folder across
-  sources. Each file is named `<exact folder name> - <source name>`, so
-  Jellyfin shows one item with one version per source, labelled with the
-  source's name. M-8 confirmed this. A movie without a strong identity gets a
-  folder per source item, and so never merges on title alone. Series stay per
-  source for now; grouping episodes across sources is Phase 4.
+- **Works.** Items are one work when they share a TMDB, TVDB, or IMDb
+  identifier and disagree on none, films and series separately (Phase 4,
+  C-HI-6). A source that knows a film only by IMDb joins one that knows it by
+  TMDB and IMDb; two items with one IMDb identifier and different TMDB ones
+  stay apart. The NFO carries every identifier the work's items know. An item
+  without a strong identifier is a work of its own, and never merges on title.
+- **Versions.** A film shares one folder across sources. Each file is named
+  `<exact folder name> - <source name>`, so Jellyfin shows one item with one
+  version per source, labelled with the source's name (M-8). A second copy
+  from one source is labelled `<source name> 2`.
+- **Episodes.** A series is one show folder across sources, holding every
+  source's episodes. An episode is addressed by its series work, season, and
+  episode number, and has one file from one source, because Jellyfin shows no
+  episode versions (M-10, A-13). The source already playing an episode keeps
+  it while it remains; otherwise the first source by node ID is chosen. The
+  file name carries no source, so a change of source keeps the path. An
+  episode without numbers is never grouped.
+- **Pins.** A work keeps the folder it was first materialized under, and a
+  show keeps the identifiers its NFO was first written with, while it is
+  materialized and for 90 days after, because Jellyfin keys a user's state on
+  the path and the identifiers (see "History" below, A-14).
 - **What a file holds.** A `.strm` holds only a local relay URL with an opaque
   reference. It never holds a peer address, a key, or a token (C-PR-3).
 - **Subtitles and artwork.** External subtitles are copied beside their

@@ -1,0 +1,411 @@
+{
+  "repo": "washburnello/jellymesh",
+  "kaneo_project_slug": "jellymesh",
+  "tasks": [
+    {
+      "title": "Phase 0 feasibility lab and go/no-go decision",
+      "labels": [
+        "research",
+        "done"
+      ],
+      "state": "closed",
+      "phase": "phase-0",
+      "body": "Deliverable: the Phase 0 go/no-go measurements that gated the .strm/NFO architecture. Evidence: docs/phase-0-lab.md, docs/phase-0-results.md, lab/, commits `5283201` (planning + policy core) and `ffe3a85` (executable conformance).",
+      "children": [
+        {
+          "title": "Measure .strm extraction/probing at scan time (A1)",
+          "body": "Measured 0 bytes pulled from a remote .strm during scan, full metadata refresh, trickplay/chapter/keyframe tasks. docs/phase-0-results.md section 2."
+        },
+        {
+          "title": "Test local-plus-remote version grouping (A2)",
+          "body": "Confirmed two cards by default; POST /Videos/MergeVersions validated as mitigation. docs/phase-0-results.md section 3."
+        },
+        {
+          "title": "Test music grouping and duplication (A3)",
+          "body": "Confirmed duplicate artists/albums/tracks; NFO did not repair. Music cut from v1. docs/phase-0-results.md section 5."
+        },
+        {
+          "title": "Synthetic catalog scale test (A5)",
+          "body": "50,001-item run: 2.94h at 4.72 items/s, 187 MB DB (~3.7 KB/item). docs/phase-0-results.md section 4."
+        },
+        {
+          "title": "Token and path leakage test (B6)",
+          "body": "Non-admin could read peer origin URL and stream 2 MB through /Videos/{id}/stream. docs/phase-0-results.md section 6."
+        }
+      ],
+      "issue": 2
+    },
+    {
+      "title": "Independent plan review and architecture corrections",
+      "labels": [
+        "research",
+        "done"
+      ],
+      "state": "closed",
+      "phase": "phase-0",
+      "body": "Deliverable: independent review of the planning phase, with findings resolved, superseded, or reopened as code landed. Evidence: docs/plan-review.md (r4), docs/follow-up-decisions.md.",
+      "issue": 8
+    },
+    {
+      "title": "Policy core: publication, opt-out, blocks, invitations",
+      "labels": [
+        "feature",
+        "done"
+      ],
+      "state": "closed",
+      "phase": "phase-1",
+      "body": "Deliverable: internal/policy and internal/settings model private-by-default publication, per-library destination opt-out, symmetric pairwise blocks, and invitations, consulting the replicated roster. Evidence: internal/policy/, internal/settings/, README background; criteria C-BL-1..5, C-PO-1..5.",
+      "issue": 9
+    },
+    {
+      "title": "Node identity and mutual-TLS transport",
+      "labels": [
+        "feature",
+        "security",
+        "done"
+      ],
+      "state": "closed",
+      "phase": "phase-1",
+      "body": "Deliverable: Ed25519 node identity persisting across restart, owner-only key file, and mutual TLS with peers authorized by key fingerprint (never hostname). Evidence: internal/identity/, commit `7011c77`; criteria C-ID-1..5, C-TR-1..9.",
+      "issue": 10
+    },
+    {
+      "title": "Replicated group log and signed group state (A-5)",
+      "labels": [
+        "feature",
+        "security",
+        "done"
+      ],
+      "state": "closed",
+      "phase": "phase-1",
+      "body": "Deliverable: append-only, hash-chained group log that only the epoch owner sequences; administrators act through signed proposals embedded by the owner; transport trust derived from the roster. Evidence: internal/grouplog/, internal/membership/, internal/replication/, commits `b310532`, `3af812f`, `84cf9af`, `4f90ee6`; criteria C-PO-9..23, C-TR-9.",
+      "issue": 11
+    },
+    {
+      "title": "Owner succession over the wire with signed attestations",
+      "labels": [
+        "feature",
+        "security",
+        "done"
+      ],
+      "state": "closed",
+      "phase": "phase-1",
+      "body": "Deliverable: owner-absence watch driven by heartbeats; eligible successor collects signed quorum attestations, claims, and opens a new epoch that fences the former owner. Evidence: internal/group/, commit `6e06149`; criteria C-PO-7, C-PO-14, C-PO-15, C-PO-24.",
+      "issue": 12
+    },
+    {
+      "title": "Enrollment by short code and QR code",
+      "labels": [
+        "feature",
+        "done"
+      ],
+      "state": "closed",
+      "phase": "phase-1",
+      "body": "Deliverable: node joins end to end by 29-char Crockford base32 short code or QR, redeeming at the inviter over a key-pinned connection, approved by an administrator, admitted by a signed owner-sequenced event, then downloads the log from genesis. Evidence: internal/enrollment/, internal/federation/, commit `6417dd9`; criterion C-EN-1..6.",
+      "issue": 13
+    },
+    {
+      "title": "Durable state layer on SQLite",
+      "labels": [
+        "feature",
+        "done"
+      ],
+      "state": "closed",
+      "phase": "phase-1",
+      "body": "Deliverable: embedded SQLite persistence with atomic transactions, owner-only files, indexed retention expiry, and fixed-width chronological timestamps; all stores survive restart. Evidence: internal/state (or equivalent), commits `1bed439`, `15069ff`, `d57e5c0`; criteria C-ST-1..11.",
+      "issue": 14
+    },
+    {
+      "title": "Encrypted backup and restore",
+      "labels": [
+        "feature",
+        "security",
+        "done"
+      ],
+      "state": "closed",
+      "phase": "phase-1",
+      "body": "Deliverable: AES-256-GCM backups of node key, certificate, and durable state under a PBKDF2 passphrase; tamper/wrong-passphrase refusal; restore never overwrites; restored owner held back until caught up. Evidence: internal/backup/, commit `dbe3500`; criteria C-ST-7, C-ST-10, C-ST-11.",
+      "issue": 15
+    },
+    {
+      "title": "Audit events with two layers of redaction",
+      "labels": [
+        "feature",
+        "security",
+        "done"
+      ],
+      "state": "closed",
+      "phase": "phase-1",
+      "body": "Deliverable: audit log with an allow-list for detail and registered-secret scrubbing on every field; enrollment, group log changes including equivocation, and block decisions audited without secrets. Evidence: internal/audit/, commit `c5e8a98`; criterion C-OP-1.",
+      "issue": 16
+    },
+    {
+      "title": "Daemon and CLI administration, container deployment",
+      "labels": [
+        "feature",
+        "done"
+      ],
+      "state": "closed",
+      "phase": "phase-1",
+      "body": "Deliverable: node runs as a containerized daemon administered from the CLI/admin API on loopback with an owner-only token; finds/joins at most one group; image builds and reports healthy. Evidence: cmd/jellymesh/, deploy/, Dockerfile, commits `b9b7c91`, `0c353e6`; criteria C-OP-5, C-OP-6; manual M-6.",
+      "issue": 17
+    },
+    {
+      "title": "Jellyfin source adapter as a non-administrator service user",
+      "labels": [
+        "feature",
+        "security",
+        "done"
+      ],
+      "state": "closed",
+      "phase": "phase-2",
+      "body": "Deliverable: read own Jellyfin as a dedicated non-admin service user; sees only granted libraries; paged item enumeration; ancestor-based library resolution; re-authenticates on token refusal; refuses administrator credentials/keys. Evidence: internal/ (adapter), commit `28a1ffb`; criteria C-SA-1, C-SA-2; manual M-7 confirmed against real Jellyfin 10.11.11 (commit `4071160`).",
+      "issue": 18
+    },
+    {
+      "title": "Source catalog: publication, revisions, tombstones, authorization",
+      "labels": [
+        "feature",
+        "done"
+      ],
+      "state": "closed",
+      "phase": "phase-2",
+      "body": "Deliverable: source catalog with incremental revisioned changes, confirmed tombstones with retention, and per-item authorization against the item's live library. Evidence: internal/catalog/, commit `a112359`; criteria C-CA-1, C-CA-2, C-CA-4.",
+      "issue": 19
+    },
+    {
+      "title": "Declared root paths and publication pause (A-9)",
+      "labels": [
+        "feature",
+        "security",
+        "done"
+      ],
+      "state": "closed",
+      "phase": "phase-2",
+      "body": "Deliverable: an operator declares each published library's root paths; every refresh checks item paths and pauses/withdraws the publication when an item falls outside. Evidence: internal/policy; criterion C-CA-3; assumption A-9.",
+      "issue": 20
+    },
+    {
+      "title": "Protected-library enforcement",
+      "labels": [
+        "feature",
+        "security",
+        "done"
+      ],
+      "state": "closed",
+      "phase": "phase-2",
+      "body": "Deliverable: a protected library (e.g. Cedar Family Movies) is absent from remote catalog, search, artwork, subtitles, and playback, including by guessed identifier, and is refused even if the service user can see it. Evidence: internal/policy; criterion C-PR-1.",
+      "issue": 21
+    },
+    {
+      "title": "Destination opt-out enforcement and catalog transport",
+      "labels": [
+        "feature",
+        "security",
+        "done"
+      ],
+      "state": "closed",
+      "phase": "phase-2",
+      "body": "Deliverable: catalogs flow between members over mutual TLS; destination drops opted-out items even if sent; source never sends them; blocked or non-member destinations get nothing. Evidence: internal/replication/catalog, commit `cebbb91`; criteria C-PR-2, C-CA-5, C-OP-7.",
+      "issue": 22
+    },
+    {
+      "title": "Wire the catalog into the daemon; drop the administrator API key",
+      "labels": [
+        "feature",
+        "security",
+        "done"
+      ],
+      "state": "closed",
+      "phase": "phase-2",
+      "body": "Deliverable: the daemon serves the catalog through its member routes using the non-admin service user instead of an administrator key. Evidence: commit `0dd6c60`; assumptions A-8.",
+      "issue": 23
+    },
+    {
+      "title": "Materialize remote catalogs into the generated root",
+      "labels": [
+        "feature",
+        "done"
+      ],
+      "state": "closed",
+      "phase": "phase-3",
+      "body": "Deliverable: generated .strm references, NFO metadata, subtitles, and posters written atomically; one folder per strong identity with one source-named file per source; no provider IDs in paths. Evidence: internal/materialize, commits `b0a1419`, `c30b4d7`; criteria C-MA-1..5, C-PR-3.",
+      "issue": 24
+    },
+    {
+      "title": "Local media relay with ranges, HEAD, and cancellation",
+      "labels": [
+        "feature",
+        "security",
+        "done"
+      ],
+      "state": "closed",
+      "phase": "phase-3",
+      "body": "Deliverable: destination relay serves media/subtitles/images from the source over mutual TLS, supports ranges, HEAD, cancellation and backpressure without full buffering, and authorizes locally (allow-listed clients, issued unrevoked references, destination policy per request). Evidence: internal/relay, commit `5790113`, `d3126fa`; criteria C-PB-1, C-PR-5.",
+      "issue": 25
+    },
+    {
+      "title": "Per-destination bandwidth ceiling and safe source-unavailable handling",
+      "labels": [
+        "feature",
+        "done"
+      ],
+      "state": "closed",
+      "phase": "phase-3",
+      "body": "Deliverable: a source enforces a per-destination bandwidth ceiling shared by all that destination's streams; an unavailable source fails cleanly (502) without destructive catalog pruning. Evidence: internal/limits, commit `d3126fa`; criteria C-PB-2, C-PB-3; assumption A-1 (ceiling half).",
+      "issue": 26
+    },
+    {
+      "title": "Source-side head cache for Jellyfin's repeated probes (C-PB-5)",
+      "labels": [
+        "feature",
+        "done"
+      ],
+      "state": "closed",
+      "phase": "phase-3",
+      "body": "Deliverable: the relay answers repeated PlaybackInfo probes from a bounded per-revision head cache, confirming each hit with a bodiless HEAD and stitching exactly past the head. Evidence: commit `24de056`, `82bf0da`; criterion C-PB-5.",
+      "issue": 27
+    },
+    {
+      "title": "Full playback chain on real Jellyfin 10.11.11 (M-9)",
+      "labels": [
+        "testing",
+        "done"
+      ],
+      "state": "closed",
+      "phase": "phase-3",
+      "body": "Deliverable: two Jellyfin containers and two Jellymesh nodes on one Docker network; walnut joined cedar's group by short code, materialized the film with subtitle, and streamed exact bytes through the relay. Evidence: lab/playcheck/run-throwaway.sh, commit `dc8c52f`; manual M-9, also M-8 (layout) and M-7 (adapter).",
+      "issue": 28
+    },
+    {
+      "title": "Compromise-recovery runbook",
+      "labels": [
+        "docs",
+        "security",
+        "done"
+      ],
+      "state": "closed",
+      "phase": "phase-3",
+      "body": "Deliverable: operator runbook for compromised node key; recovery is by re-enrollment (a fresh key is a distinct peer), not rotation. Evidence: docs/runbook-compromise-recovery.md, commit `46db94d`; criteria C-OP-2, C-OP-4.",
+      "issue": 29
+    },
+    {
+      "title": "Phase 4: identity, grouping, and progress",
+      "labels": [
+        "enhancement"
+      ],
+      "state": "open",
+      "phase": "phase-4",
+      "body": "Deliverable: strong work identity and alternate versions, server labels and source metadata, local-only favourites/ratings/history, and validated client-specific version selection. Evidence for the gap: docs/design-spec.md section 16 Phase 4; conformance C-HI-6 PARTIAL (no episode addressing, plan-review D6).",
+      "children": [
+        {
+          "title": "Episode-level work identity (series+season+episode)",
+          "body": "Current flat type/provider/id triple fails to restore most TV progress. plan-review D6; C-HI-6 PARTIAL."
+        },
+        {
+          "title": "Merge a remote version with a local copy via the Jellyfin merge API",
+          "body": "A-4/A-11: merging remote with a local copy of the same film still needs POST /Videos/MergeVersions and is left to Phase 4."
+        },
+        {
+          "title": "Music scope decision and separate Friends Music library",
+          "body": "Music is out of v1 (A-3); if it returns it must be contained in a separate library. Validate music behaviour per design-spec Phase 4."
+        },
+        {
+          "title": "Server labels and source metadata in generated artifacts",
+          "body": "Version labels by source and richer source metadata; design-spec section 10."
+        }
+      ],
+      "issue": 31
+    },
+    {
+      "title": "Purge generated content without losing per-user history (C-HI-5)",
+      "labels": [
+        "enhancement"
+      ],
+      "state": "open",
+      "phase": "phase-4",
+      "body": "What's left: the ledger and retention halves are proven, but the purge path that drives them does not exist yet. Evidence: docs/conformance.md C-HI-5 PARTIAL.",
+      "issue": 36
+    },
+    {
+      "title": "Source-side transcode for streams above the bandwidth ceiling (C-PB-4)",
+      "labels": [
+        "enhancement"
+      ],
+      "state": "open",
+      "phase": "phase-4",
+      "body": "What's left: implement requesting a transcoded rendition from source Jellyfin when a requested media source exceeds the ceiling, instead of throttling/cloning. Evidence: docs/conformance.md C-PB-4 PENDING; assumption A-1 second half.",
+      "issue": 37
+    },
+    {
+      "title": "Public HTTPS from an external network without Tailscale (M-2/M-2a)",
+      "labels": [
+        "enhancement"
+      ],
+      "state": "open",
+      "phase": "phase-5",
+      "body": "What's left: establish a reachable public address (guard against CGNAT in 100.64.0.0/10), then a domain, DNS, port forward, and certificate so federation works without Tailscale. Evidence: docs/conformance.md M-2, M-2a.",
+      "issue": 38
+    },
+    {
+      "title": "Backup, restore, and rollback drills including compromise recovery (M-3)",
+      "labels": [
+        "testing"
+      ],
+      "state": "open",
+      "phase": "phase-5",
+      "body": "What's left: run the drills against the lab (C-ST-7/10/11 are in place); rehearse docs/runbook-compromise-recovery.md. Evidence: docs/conformance.md M-3.",
+      "issue": 39
+    },
+    {
+      "title": "Multi-home pilot surviving reboots, outages, renewal, library changes (M-4)",
+      "labels": [
+        "testing"
+      ],
+      "state": "open",
+      "phase": "phase-5",
+      "body": "What's left: the genuine long pole \u2014 a second household running alpha software over weeks. Cannot be simulated. Evidence: docs/conformance.md M-4.",
+      "issue": 40
+    },
+    {
+      "title": "First join to a group of realistic size (M-5)",
+      "labels": [
+        "testing"
+      ],
+      "state": "open",
+      "phase": "phase-5",
+      "body": "What's left: measure first-join item count against a real catalog size; throughput is known at 4.72 items/s (phase-0-results.md section 4). Evidence: docs/conformance.md M-5.",
+      "issue": 41
+    },
+    {
+      "title": "Client matrix: stock Jellyfin clients browse, play, seek, resume (M-1/M-1a)",
+      "labels": [
+        "testing"
+      ],
+      "state": "open",
+      "phase": "phase-5",
+      "body": "What's left: no Jellyfin client has yet played a federated item; validate Web (available now against hand-authored .strm), Android, Android TV, iOS/Swiftfin, Roku. Evidence: docs/conformance.md M-1, M-1a \u2014 the largest untested assumption.",
+      "issue": 42
+    },
+    {
+      "title": "Phase 5 hardening, failure injection, and supported-version documentation",
+      "labels": [
+        "enhancement"
+      ],
+      "state": "open",
+      "phase": "phase-5",
+      "body": "What's left: public HTTPS and failure-injection tests, the drills and pilot above, and documented supported Jellyfin versions and unsupported client behaviour. Evidence: docs/design-spec.md section 16 Phase 5, section 17 release gates.",
+      "issue": 43
+    },
+    {
+      "title": "Phase 6: stretch UX (heartbeat/offline detail, provider health, source avatar)",
+      "labels": [
+        "enhancement"
+      ],
+      "state": "open",
+      "phase": "phase-6",
+      "body": "What's left: management-surface heartbeat and offline detail, provider-health rendering in Jellyfin Web, a client-independent source avatar convention, and exploring direct client-to-provider playback. Evidence: docs/design-spec.md section 16 Phase 6.",
+      "issue": 44
+    }
+  ]
+}
