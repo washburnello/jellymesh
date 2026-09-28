@@ -140,30 +140,31 @@ findings in [plan-review.md](plan-review.md).
 | C-HI-5 | Generated content can be purged without losing per-user watched state, play count, or resume position | `TestRestoreWithNoPreservedRowReturnsLocalUnchanged`, `TestRetentionRepositoryRecordDeletionRoundTrip`, `TestReturningItemDiscardsRetention` | PARTIAL — the ledger and retention halves are proven; the purge path that drives them does not exist yet |
 | C-HI-6 | Works are merged only on strong provider identity; title and year alone never merge | `TestStrongIdentityMatch`, `TestDifferentStrongIdentitiesDoNotMatch` | PARTIAL — the identity primitive is proven; it has no episode addressing, see plan-review D6 |
 
-## 8. Not yet implemented
+## 8. Privacy, materialization, playback, and operations
 
-These are accepted requirements from the release gates with no implementation
-behind them. They are listed so that the gap is explicit rather than implied.
+Accepted requirements from the release gates, with what proves each so far.
+A criterion with nothing behind it is listed anyway, so the gap is explicit
+rather than implied.
 
-| ID | Criterion | Status |
-|---|---|---|
-| C-PR-3 | Generated artifacts and logs contain no credentials; a `.strm` holds a local relay reference and never a peer URL or bearer token | PENDING |
-| C-PR-4 | Local Jellyfin library permissions are a browse boundary only and are not relied on for playback authorization | MANUAL — measured in phase-0-results.md section 8; the design must not assume otherwise |
+| ID | Criterion | Verified by | Status |
+|---|---|---|---|
+| C-PR-3 | Generated artifacts and logs contain no credentials; a `.strm` holds a local relay reference and never a peer URL or bearer token | `TestGeneratedFilesHoldNoCredentialsOrPeerAddresses`, `TestSecretsNeverReachTheSink`, `TestAnUnreachableSourceFailsCleanly` | PASS |
+| C-PR-4 | Local Jellyfin library permissions are a browse boundary only and are not relied on for playback authorization | none yet | MANUAL — measured in phase-0-results.md section 8; the design must not assume otherwise |
 | C-PR-5 | The relay listener cannot be reached from outside the host, and requests to it are authorized locally rather than by bind address alone | `TestOnlyAllowedClientsMayUseTheRelay`, `TestUnknownReferencesAndPolicyRefusalsReachNoSource` | PARTIAL — the relay serves only allow-listed clients and issued, unrevoked references, and re-checks policy; its configuration and deployment wiring remain |
-| C-MA-1 | Generated artifacts are written atomically and never appear partially to Jellyfin | PENDING |
-| C-MA-2 | Generated layout does not embed provider identifiers in directory names | PENDING — see assumption A-2 |
-| C-MA-3 | External subtitles are materialized alongside generated references | `TestSubtitlesAndImagesAreServedOnlyAsListed` | PARTIAL — the source lists external subtitles in the catalog and serves only listed ones; copying them beside the reference remains |
+| C-MA-1 | Generated artifacts are written atomically and never appear partially to Jellyfin: each file is renamed into place from a dot-prefixed temporary name, metadata before the .strm, and an unchanged pass writes and fetches nothing | `TestWritesAreAtomicAndOrdered` | PASS |
+| C-MA-2 | Generated layout does not embed provider identifiers in directory or file names; they live in NFO only | `TestAMovieFromTwoSourcesSharesAFolder`, `TestSanitize` | PASS |
+| C-MA-3 | External subtitles are materialized alongside generated references, forced ones marked, and a failed fetch is retried on the next pass | `TestSubtitlesAndImagesAreServedOnlyAsListed`, `TestSubtitlesAreCopiedBesideTheReference` | PASS |
 | C-PB-1 | The relay supports range requests, HEAD, cancellation, and backpressure without full-file buffering, at the source's media route and at the destination's local relay | `TestAMemberStreamsWithRangesAndHead`, `TestADisconnectStopsTheReadFromJellyfin`, `TestRangesAndHeadPassThrough`, `TestTheRelayStreamsAndCancelsUpstream` | PASS |
 | C-PB-2 | An unavailable source fails playback cleanly, as a 502 with a plain reason, without destructive catalog pruning | `TestAnUnreachableSourceFailsCleanly`, `TestAFailedSyncKeepsKnownGoodState` | PASS |
 | C-PB-3 | A source enforces a bandwidth ceiling per destination, shared by all of that destination's streams | `TestTheCeilingBoundsADestinationsStreamsTogether` | PASS |
-| C-MA-4 | Removing a generated item deletes only paths inside the generated root and revokes its relay reference in the same step, so a withdrawn item is unplayable at once | none yet | PENDING |
-| C-MA-5 | A movie with a strong identity from several sources is materialized in one folder with one source-named file per source, and a movie without one never shares a folder | none yet | PENDING — layout confirmed on 10.11.11 (M-8) |
+| C-MA-4 | Removing a generated item revokes its relay reference first, deletes only its own files and only inside the generated root, drops a folder with nothing left to play, and does not disturb other versions | `TestRemovalRevokesAndStaysInsideTheRoot`, `TestEpisodesAreLaidOutBySeriesAndSeason` | PASS |
+| C-MA-5 | A movie with a strong identity from several sources is materialized in one folder with one source-named file per source, and a movie without one never shares a folder | `TestAMovieFromTwoSourcesSharesAFolder`, `TestMoviesWithoutAStrongIdentityStaySeparate`, `TestVersionLabelsAreDistinct` | PASS |
 | C-PB-4 | A stream above a destination's bandwidth ceiling is served as a source-side transcode rather than throttled | none yet | PENDING — the second half of assumption A-1 |
 | C-PB-5 | Jellyfin's repeated probe of a remote item on every PlaybackInfo does not repeatedly cross the source's uplink | none yet | PENDING — phase-0-results.md A1-a measured about 1 MB per call |
 | C-OP-1 | Audit events are recorded with secrets redacted: detail outside an allow-list of identifiers and outcomes is replaced, registered secret material is scrubbed from every field, and enrollment, group log changes including equivocation, and block decisions are audited without the invitation secret appearing in any encoding | `TestSecretsNeverReachTheSink`, `TestEnrollmentIsAuditedWithoutSecrets`, `TestGroupChangesAreAudited`, `TestBlockDecisionsAreAudited`, `TestAuditRepositoryRoundTrip` | PASS |
-| C-OP-2 | Compromise recovery is by re-enrollment: a fresh key is a distinct peer, and readmission requires a new invitation and fresh approval | DECIDED — see design-spec.md section 8. The mechanism it relies on is covered by C-ID-3, C-TR-4, C-TR-7 and C-PO-5; C-OP-3 is in place and the runbook is C-OP-4 |
+| C-OP-2 | Compromise recovery is by re-enrollment: a fresh key is a distinct peer, and readmission requires a new invitation and fresh approval | none yet | DECIDED — see design-spec.md section 8. The mechanism it relies on is covered by C-ID-3, C-TR-4, C-TR-7 and C-PO-5; C-OP-3 is in place and the runbook is C-OP-4 |
 | C-OP-3 | Ejecting a member also revokes its transport trust on every node that applies the ejection, so a compromised key cannot complete a handshake; an ejection by a non-administrator changes nothing | `TestEjectionRevokesTrustOnEveryNode`, `TestReceiversReapplyTheRoleRules` | PASS |
-| C-OP-4 | An operator runbook documents the compromise-recovery sequence | DECIDED — [runbook-compromise-recovery.md](runbook-compromise-recovery.md), using the commands the CLI provides; rehearsing it is part of the M-3 drill |
+| C-OP-4 | An operator runbook documents the compromise-recovery sequence | none yet | DECIDED — [runbook-compromise-recovery.md](runbook-compromise-recovery.md), using the commands the CLI provides; rehearsing it is part of the M-3 drill |
 | C-OP-5 | Nodes form and operate a group through the daemon's admin API alone: founding, joining by short code, promotion, approval by an administrator that is not the owner, a proposal queued while the owner is unreachable and delivered when it returns, ejection revoking trust, and state surviving a restart; a node founds or joins at most one group | `TestAGroupFormsAndOperatesThroughTheDaemon` | PASS |
 | C-OP-6 | The admin API is served only on loopback and only to a caller holding the owner-only admin token | `TestTheAdminListenerMustBeLoopback`, `TestTheAdminAPIRequiresTheToken`, `TestTheAdminTokenIsOwnerOnly` | PASS |
 | C-OP-7 | Catalogs flow between members through the daemon: publication with declared roots, a protected library refused, a join offering the joiner's own publications and refused when it publishes nothing, both members' catalogs held by the other, opting out (with nothing sent) and back in, a block in either direction, and ejection removing the ejected member's items | `TestCatalogsFlowBetweenMembersThroughTheDaemon` | PASS |
