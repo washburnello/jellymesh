@@ -226,7 +226,10 @@ func TestTheHeadIsTiedToOneRevisionOfOneFile(t *testing.T) {
 	if response.StatusCode != http.StatusPartialContent || !bytes.Equal(body, changed[:3<<20]) {
 		t.Fatalf("after the file changed: status %d, exact=%v", response.StatusCode, bytes.Equal(body, changed[:len(body)]))
 	}
-	waitFor(t, func() bool { head, ok := r.cache.Get(r.refs[reference]); return ok && head.Total == int64(len(changed)) })
+	waitFor(t, func() bool {
+		head, ok := r.cache.Get(r.refs[reference])
+		return ok && head.Total == int64(len(changed))
+	})
 	if head, ok := r.cache.Get(r.refs[reference]); !ok || head.Total != int64(len(changed)) || !bytes.Equal(head.Data, changed[:len(head.Data)]) {
 		t.Fatal("the head should be refilled from the changed file")
 	}
