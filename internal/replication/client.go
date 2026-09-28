@@ -130,6 +130,27 @@ func (client *Client) SendAttestation(ctx context.Context, successor Peer, group
 	return client.do(ctx, successor, http.MethodPost, "/jellymesh/v1/groups/"+url.PathEscape(groupID)+"/attestations", body, nil)
 }
 
+// Stream makes a request to peer and returns the response for the caller to
+// stream, without interpreting its status. Only a failure to reach the peer,
+// or its refusal of this node's certificate, is an error. The caller closes
+// the body; cancelling ctx stops the transfer.
+func (client *Client) Stream(ctx context.Context, peer Peer, method string, path string, header http.Header) (*http.Response, error) {
+	request, err := http.NewRequestWithContext(ctx, method, "https://"+peer.Address+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	for name, values := range header {
+		for _, value := range values {
+			request.Header.Add(name, value)
+		}
+	}
+	response, err := (&http.Client{Transport: client.transportFor(peer)}).Do(request)
+	if err != nil {
+		return nil, classify(err)
+	}
+	return response, nil
+}
+
 // GetJSON fetches path from peer over the client's pinned mutual-TLS
 // transport and decodes the response. Other member-only services, such as the
 // catalog, use it so they share one transport and one error classification.

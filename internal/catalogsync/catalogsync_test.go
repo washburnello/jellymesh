@@ -62,6 +62,7 @@ type world struct {
 	catalog     *sourcecatalog.Catalog
 	destination *Destination
 	source      replication.Peer
+	server      *Server
 }
 
 func newWorld(t *testing.T) *world {
@@ -106,6 +107,7 @@ func newWorld(t *testing.T) *world {
 	replicationServer := replication.NewServer(w.cedar.identity)
 	replicationServer.Add("group-1", group)
 	catalogServer := NewServer(w.catalog, group, "group-1", store.NewPeerRepository(w.cedar.database))
+	w.server = catalogServer
 	w.source = serve(t, w.cedar.identity, federation.Handler(replicationServer, replicationServer, catalogServer))
 
 	w.destination = NewDestination(

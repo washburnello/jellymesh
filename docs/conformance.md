@@ -152,10 +152,10 @@ behind them. They are listed so that the gap is explicit rather than implied.
 | C-PR-5 | The relay listener cannot be reached from outside the host, and requests to it are authorized locally rather than by bind address alone | none yet | PENDING — config accepts any relay address; plan-review.md notes loopback is insufficient once Jellyfin and Jellymesh are in separate network namespaces |
 | C-MA-1 | Generated artifacts are written atomically and never appear partially to Jellyfin | PENDING |
 | C-MA-2 | Generated layout does not embed provider identifiers in directory names | PENDING — see assumption A-2 |
-| C-MA-3 | External subtitles are materialized alongside generated references | PENDING — phase-0-results.md section 6 |
-| C-PB-1 | The relay supports range requests, HEAD, cancellation, and backpressure without full-file buffering | PENDING — byte-exact pass-through measured in phase-0-results.md section 7 |
+| C-MA-3 | External subtitles are materialized alongside generated references | `TestSubtitlesAndImagesAreServedOnlyAsListed` | PARTIAL — the source lists external subtitles in the catalog and serves only listed ones; copying them beside the reference remains |
+| C-PB-1 | The relay supports range requests, HEAD, cancellation, and backpressure without full-file buffering | `TestAMemberStreamsWithRangesAndHead`, `TestADisconnectStopsTheReadFromJellyfin` | PARTIAL — the source's media route is proven; the destination's local relay remains |
 | C-PB-2 | An unavailable source fails playback cleanly without destructive catalog pruning | PENDING |
-| C-PB-3 | A source enforces a bandwidth ceiling per destination | PENDING — see assumption A-1 |
+| C-PB-3 | A source enforces a bandwidth ceiling per destination, shared by all of that destination's streams | `TestTheCeilingBoundsADestinationsStreamsTogether` | PASS |
 | C-MA-4 | Removing a generated item deletes only paths inside the generated root and revokes its relay reference in the same step, so a withdrawn item is unplayable at once | none yet | PENDING |
 | C-MA-5 | A movie with a strong identity from several sources is materialized in one folder with one source-named file per source, and a movie without one never shares a folder | none yet | PENDING — layout confirmed on 10.11.11 (M-8) |
 | C-PB-4 | A stream above a destination's bandwidth ceiling is served as a source-side transcode rather than throttled | none yet | PENDING — the second half of assumption A-1 |

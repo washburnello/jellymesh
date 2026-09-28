@@ -64,6 +64,27 @@ type Item struct {
 	// and is used only to check the item against the declared roots.
 	Path string `json:"Path,omitempty"`
 	ETag string `json:"Etag,omitempty"`
+
+	ImageTags    map[string]string `json:"ImageTags,omitempty"`
+	MediaSources []MediaSource     `json:"MediaSources,omitempty"`
+}
+
+// MediaSource is one playable source of an item.
+type MediaSource struct {
+	ID           string        `json:"Id"`
+	MediaStreams []MediaStream `json:"MediaStreams,omitempty"`
+}
+
+// MediaStream is one stream of a media source. Only external subtitles
+// matter to Jellymesh: embedded streams travel inside the media itself.
+type MediaStream struct {
+	Index      int    `json:"Index"`
+	Type       string `json:"Type"`
+	Codec      string `json:"Codec,omitempty"`
+	Language   string `json:"Language,omitempty"`
+	IsExternal bool   `json:"IsExternal,omitempty"`
+	IsForced   bool   `json:"IsForced,omitempty"`
+	IsDefault  bool   `json:"IsDefault,omitempty"`
 }
 
 // Page is one page of a library's items.
@@ -79,6 +100,9 @@ type Client struct {
 	password string
 	deviceID string
 	http     *http.Client
+	// streaming has no overall timeout, since a stream lasts as long as
+	// playback does; the caller's context bounds it instead.
+	streaming *http.Client
 
 	mutex  sync.Mutex
 	token  string
@@ -90,7 +114,8 @@ type Client struct {
 func New(baseURL string, username string, password string, deviceID string) *Client {
 	return &Client{
 		base: strings.TrimRight(baseURL, "/"), username: username, password: password, deviceID: deviceID,
-		http: &http.Client{Timeout: 60 * time.Second},
+		http:      &http.Client{Timeout: 60 * time.Second},
+		streaming: &http.Client{},
 	}
 }
 
@@ -231,7 +256,7 @@ func (client *Client) Items(ctx context.Context, libraryID string, startIndex in
 		"ParentId":         {libraryID},
 		"Recursive":        {"true"},
 		"IncludeItemTypes": {strings.Join(ItemTypes, ",")},
-		"Fields":           {"ProviderIds,Path,Etag,Overview,Genres,OriginalTitle,PremiereDate,OfficialRating"},
+		"Fields":           {"ProviderIds,Path,Etag,Overview,Genres,OriginalTitle,PremiereDate,OfficialRating,MediaSources,MediaStreams"},
 		"SortBy":           {"SortName"},
 		"StartIndex":       {strconv.Itoa(startIndex)},
 		"Limit":            {strconv.Itoa(limit)},
@@ -259,4 +284,108 @@ func (client *Client) LibraryOf(ctx context.Context, itemID string) (string, err
 		}
 	}
 	return "", ErrNotFound
+}
+
+// Stream opens an item's original media as the service user, forwarding the
+// caller's Range header. It uses the static stream route, which serves the
+// file as stored, honours ranges and HEAD, and is open to a non-administrator
+// (conformance M-8). The caller closes the response body.
+func (client *Client) Stream(ctx context.Context, method string, itemID string, rangeHeader string) (*http.Response, error) {
+	query := url.Values{"static": {"true"}}
+	return client.raw(ctx, method, "/Videos/"+url.PathEscape(itemID)+"/stream", query, map[string]string{"Range": rangeHeader})
+}
+
+// Subtitle opens one external subtitle of an item as SubRip text.
+func (client *Client) Subtitle(ctx context.Context, itemID string, mediaSourceID string, index int) (*http.Response, error) {
+	path := fmt.Sprintf("/Videos/%s/%s/Subtitles/%d/0/Stream.srt", url.PathEscape(itemID), url.PathEscape(mediaSourceID), index)
+	return client.raw(ctx, http.MethodGet, path, nil, nil)
+}
+
+// PrimaryImage opens an item's primary image.
+func (client *Client) PrimaryImage(ctx context.Context, itemID string) (*http.Response, error) {
+	return client.raw(ctx, http.MethodGet, "/Items/"+url.PathEscape(itemID)+"/Images/Primary", nil, nil)
+}
+
+// NotifyUpdated tells Jellyfin that paths changed. A non-administrator's
+// notice is accepted but may have no effect (conformance M-8), so this is
+// best effort and its failure is not an error for the caller to act on.
+func (client *Client) NotifyUpdated(ctx context.Context, paths []string, updateType string) error {
+	type update struct {
+		Path       string `json:"Path"`
+		UpdateType string `json:"UpdateType"`
+	}
+	body := struct {
+		Updates []update `json:"Updates"`
+	}{}
+	for _, path := range paths {
+		body.Updates = append(body.Updates, update{Path: path, UpdateType: updateType})
+	}
+	encoded, _ := json.Marshal(body)
+	response, err := client.rawBody(ctx, http.MethodPost, "/Library/Media/Updated", nil, nil, encoded)
+	if err != nil {
+		return err
+	}
+	response.Body.Close()
+	if response.StatusCode >= 300 {
+		return fmt.Errorf("jellyfin answered %s to a change notice", response.Status)
+	}
+	return nil
+}
+
+// raw performs an authenticated request and returns the response for the
+// caller to stream, authenticating again once if the token is refused. Any
+// status other than 401 is returned to the caller.
+func (client *Client) raw(ctx context.Context, method string, path string, query url.Values, headers map[string]string) (*http.Response, error) {
+	return client.rawBody(ctx, method, path, query, headers, nil)
+}
+
+func (client *Client) rawBody(ctx context.Context, method string, path string, query url.Values, headers map[string]string, body []byte) (*http.Response, error) {
+	for attempt := 0; attempt < 2; attempt++ {
+		client.mutex.Lock()
+		if client.token == "" {
+			if err := client.authenticate(ctx); err != nil {
+				client.mutex.Unlock()
+				return nil, err
+			}
+		}
+		token := client.token
+		client.mutex.Unlock()
+
+		target := client.base + path
+		if len(query) > 0 {
+			target += "?" + query.Encode()
+		}
+		var reader io.Reader
+		if body != nil {
+			reader = bytes.NewReader(body)
+		}
+		request, err := http.NewRequestWithContext(ctx, method, target, reader)
+		if err != nil {
+			return nil, err
+		}
+		request.Header.Set("Authorization", client.authorization(token))
+		if body != nil {
+			request.Header.Set("Content-Type", "application/json")
+		}
+		for name, value := range headers {
+			if value != "" {
+				request.Header.Set(name, value)
+			}
+		}
+		response, err := client.streaming.Do(request)
+		if err != nil {
+			return nil, fmt.Errorf("reach jellyfin: %w", scrub(err))
+		}
+		if response.StatusCode == http.StatusUnauthorized {
+			response.Body.Close()
+			client.mutex.Lock()
+			if client.token == token {
+				client.token = ""
+			}
+			client.mutex.Unlock()
+			continue
+		}
+		return response, nil
+	}
+	return nil, ErrAuthentication
 }

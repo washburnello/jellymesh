@@ -6,6 +6,7 @@
 package jellyfintest
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"jellymesh/internal/jellyfin"
 )
@@ -29,7 +31,10 @@ type user struct {
 
 type item struct {
 	jellyfin.Item
-	library string
+	library   string
+	media     []byte
+	subtitles map[int]string
+	image     []byte
 }
 
 // Server is a running fake Jellyfin.
@@ -42,6 +47,7 @@ type Server struct {
 	libraries map[string]jellyfin.Library
 	items     map[string]*item
 	routes    []string
+	notices   int
 }
 
 // New starts a fake Jellyfin.
@@ -118,6 +124,42 @@ func (fake *Server) Delete(id string) {
 	fake.mutex.Lock()
 	defer fake.mutex.Unlock()
 	delete(fake.items, id)
+}
+
+// SetMedia gives an item playable content, served by the stream route.
+func (fake *Server) SetMedia(id string, content []byte) {
+	fake.mutex.Lock()
+	defer fake.mutex.Unlock()
+	current := fake.items[id]
+	current.media = content
+	if len(current.MediaSources) == 0 {
+		current.MediaSources = []jellyfin.MediaSource{{ID: "ms-" + id}}
+	}
+}
+
+// AddSubtitle gives an item an external subtitle at a stream index.
+func (fake *Server) AddSubtitle(id string, index int, language string, text string) {
+	fake.mutex.Lock()
+	defer fake.mutex.Unlock()
+	current := fake.items[id]
+	if current.subtitles == nil {
+		current.subtitles = map[int]string{}
+	}
+	current.subtitles[index] = text
+	if len(current.MediaSources) == 0 {
+		current.MediaSources = []jellyfin.MediaSource{{ID: "ms-" + id}}
+	}
+	current.MediaSources[0].MediaStreams = append(current.MediaSources[0].MediaStreams,
+		jellyfin.MediaStream{Index: index, Type: "Subtitle", Codec: "subrip", Language: language, IsExternal: true})
+}
+
+// SetImage gives an item a primary image.
+func (fake *Server) SetImage(id string, content []byte) {
+	fake.mutex.Lock()
+	defer fake.mutex.Unlock()
+	current := fake.items[id]
+	current.image = content
+	current.ImageTags = map[string]string{"Primary": "tag-" + id}
 }
 
 // RevokeTokens invalidates every issued access token.
@@ -222,9 +264,57 @@ func (fake *Server) serve(response http.ResponseWriter, request *http.Request) {
 			map[string]string{"Id": "root", "Type": "UserRootFolder"})
 		writeJSON(response, ancestors)
 
+	case strings.HasPrefix(request.URL.Path, "/Videos/") && strings.HasSuffix(request.URL.Path, "/stream"):
+		// Like real Jellyfin (phase-0-results.md section 8), the stream route
+		// does not check the user's library access at all.
+		id := strings.TrimSuffix(strings.TrimPrefix(request.URL.Path, "/Videos/"), "/stream")
+		found, ok := fake.items[id]
+		if !ok || found.media == nil {
+			http.NotFound(response, request)
+			return
+		}
+		response.Header().Set("Content-Type", "video/x-matroska")
+		http.ServeContent(response, request, "", time.Time{}, bytes.NewReader(found.media))
+
+	case strings.HasPrefix(request.URL.Path, "/Videos/") && strings.Contains(request.URL.Path, "/Subtitles/"):
+		parts := strings.Split(strings.TrimPrefix(request.URL.Path, "/Videos/"), "/")
+		if len(parts) < 4 {
+			http.NotFound(response, request)
+			return
+		}
+		found, ok := fake.items[parts[0]]
+		index, _ := strconv.Atoi(parts[3])
+		if !ok || found.subtitles[index] == "" {
+			http.NotFound(response, request)
+			return
+		}
+		response.Header().Set("Content-Type", "application/x-subrip")
+		response.Write([]byte(found.subtitles[index]))
+
+	case strings.HasPrefix(request.URL.Path, "/Items/") && strings.HasSuffix(request.URL.Path, "/Images/Primary"):
+		id := strings.TrimSuffix(strings.TrimPrefix(request.URL.Path, "/Items/"), "/Images/Primary")
+		found, ok := fake.items[id]
+		if !ok || found.image == nil {
+			http.NotFound(response, request)
+			return
+		}
+		response.Header().Set("Content-Type", "image/jpeg")
+		response.Write(found.image)
+
+	case request.Method == http.MethodPost && request.URL.Path == "/Library/Media/Updated":
+		fake.notices++
+		response.WriteHeader(http.StatusNoContent)
+
 	default:
 		http.NotFound(response, request)
 	}
+}
+
+// Notices reports how many change notices were received.
+func (fake *Server) Notices() int {
+	fake.mutex.Lock()
+	defer fake.mutex.Unlock()
+	return fake.notices
 }
 
 func writeJSON(response http.ResponseWriter, value any) {

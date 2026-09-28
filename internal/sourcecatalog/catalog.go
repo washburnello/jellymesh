@@ -60,6 +60,19 @@ type Metadata struct {
 	ParentIndexNumber *int              `json:"parent_index_number,omitempty"`
 	SeriesID          string            `json:"series_id,omitempty"`
 	SeasonID          string            `json:"season_id,omitempty"`
+	// Subtitles lists the item's external subtitles, which the destination
+	// copies beside its reference because Jellyfin must find them on disk.
+	Subtitles       []Subtitle `json:"subtitles,omitempty"`
+	HasPrimaryImage bool       `json:"has_primary_image,omitempty"`
+}
+
+// Subtitle describes one external subtitle of an item.
+type Subtitle struct {
+	Index         int    `json:"index"`
+	Language      string `json:"language,omitempty"`
+	Forced        bool   `json:"forced,omitempty"`
+	Default       bool   `json:"default,omitempty"`
+	MediaSourceID string `json:"media_source_id"`
 }
 
 // Catalog is this node's source catalog.
@@ -323,6 +336,7 @@ func normalize(item jellyfin.Item) (string, string, error) {
 		Year: item.ProductionYear, PremiereDate: item.PremiereDate, Genres: item.Genres, RunTimeTicks: item.RunTimeTicks,
 		ProviderIDs: item.ProviderIDs, IndexNumber: item.IndexNumber, ParentIndexNumber: item.ParentIndexNumber,
 		SeriesID: item.SeriesID, SeasonID: item.SeasonID,
+		Subtitles: externalSubtitles(item), HasPrimaryImage: item.ImageTags["Primary"] != "",
 	})
 	if err != nil {
 		return "", "", err
@@ -540,4 +554,34 @@ func (catalog *Catalog) Authorize(ctx context.Context, itemID string) (store.Sou
 		return store.SourceItem{}, ErrNotPublished
 	}
 	return row, nil
+}
+
+func externalSubtitles(item jellyfin.Item) []Subtitle {
+	var subtitles []Subtitle
+	for _, source := range item.MediaSources {
+		for _, stream := range source.MediaStreams {
+			if stream.Type == "Subtitle" && stream.IsExternal {
+				subtitles = append(subtitles, Subtitle{
+					Index: stream.Index, Language: stream.Language, Forced: stream.IsForced,
+					Default: stream.IsDefault, MediaSourceID: source.ID,
+				})
+			}
+		}
+		break // the first media source is the item's own file
+	}
+	return subtitles
+}
+
+// ItemMetadata returns the metadata the catalog holds for a live item, after
+// authorizing it against live state.
+func (catalog *Catalog) ItemMetadata(ctx context.Context, itemID string) (Metadata, error) {
+	row, err := catalog.Authorize(ctx, itemID)
+	if err != nil {
+		return Metadata{}, err
+	}
+	var metadata Metadata
+	if err := json.Unmarshal([]byte(row.Metadata), &metadata); err != nil {
+		return Metadata{}, err
+	}
+	return metadata, nil
 }

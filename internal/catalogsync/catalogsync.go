@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"jellymesh/internal/audit"
@@ -43,6 +44,11 @@ type Server struct {
 	group   *membership.Group
 	groupID string
 	blocks  membership.BlockList
+
+	media      MediaSource
+	ceiling    int64
+	pacerMutex sync.Mutex
+	pacers     map[string]*pacer
 }
 
 func NewServer(catalog *sourcecatalog.Catalog, group *membership.Group, groupID string, blocks membership.BlockList) *Server {
@@ -53,20 +59,27 @@ func NewServer(catalog *sourcecatalog.Catalog, group *membership.Group, groupID 
 func (server *Server) Register(_ *http.ServeMux, members *http.ServeMux) {
 	members.HandleFunc("GET "+librariesPath, server.libraries)
 	members.HandleFunc("GET "+changesPath, server.changes)
+	server.registerMedia(members)
 }
 
 // authorize requires the caller to be a member of this group whom this node
 // has not blocked. A block is a pairwise media cut, so a blocked member gets
 // nothing, as does anyone else: every refusal is a 404.
 func (server *Server) authorize(response http.ResponseWriter, request *http.Request) bool {
+	_, ok := server.authorizeMember(response, request)
+	return ok
+}
+
+// authorizeMember is authorize, returning the caller's node ID.
+func (server *Server) authorizeMember(response http.ResponseWriter, request *http.Request) (string, bool) {
 	if request.PathValue("group") != server.groupID || request.TLS == nil || server.catalog == nil {
 		http.NotFound(response, request)
-		return false
+		return "", false
 	}
 	fingerprint, err := peerFingerprint(request)
 	if err != nil {
 		http.NotFound(response, request)
-		return false
+		return "", false
 	}
 	var memberID string
 	_ = server.group.View(func(state *grouplog.State) {
@@ -76,16 +89,16 @@ func (server *Server) authorize(response http.ResponseWriter, request *http.Requ
 	})
 	if memberID == "" {
 		http.NotFound(response, request)
-		return false
+		return "", false
 	}
 	if server.blocks != nil {
 		blocked, err := server.blocks.IsBlocked(request.Context(), memberID)
 		if err != nil || blocked {
 			http.NotFound(response, request)
-			return false
+			return "", false
 		}
 	}
-	return true
+	return memberID, true
 }
 
 func (server *Server) libraries(response http.ResponseWriter, request *http.Request) {
