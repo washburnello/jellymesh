@@ -64,6 +64,11 @@ type Materializer struct {
 // New returns a materializer for root, writing .strm files that name
 // relayURL, such as http://127.0.0.1:8090.
 func New(root string, relayURL string, records *store.MaterializedRepository, fetch Fetcher) (*Materializer, error) {
+	// An empty root would resolve to the working directory, and removal
+	// would then operate there.
+	if strings.TrimSpace(root) == "" {
+		return nil, errors.New("a generated root is required")
+	}
 	absolute, err := filepath.Abs(root)
 	if err != nil {
 		return nil, err

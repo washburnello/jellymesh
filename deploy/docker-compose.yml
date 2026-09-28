@@ -16,10 +16,15 @@ services:
     restart: unless-stopped
     ports:
       - "8443:8443"
+      # The relay, for Jellyfin only. Publish it on loopback, never publicly.
+      - "127.0.0.1:8090:8090"
     volumes:
       # A named volume starts out owned by the image's non-root user. A bind
       # mount instead must be owned by uid 65532, mode 0700.
       - jellymesh-data:/data
+      # The generated root, which Jellyfin must also mount. It must be
+      # writable by uid 65532 and readable by Jellyfin.
+      - /srv/jellymesh-generated:/generated
     environment:
       # How peers reach this node: its public name, and the forwarded port if
       # it differs from 8443.
@@ -33,6 +38,19 @@ services:
       JELLYMESH_JELLYFIN_PASSWORD: "${JELLYMESH_JELLYFIN_PASSWORD:?set it in .env}"
       # Library IDs that must never be published, whatever the user can see.
       JELLYMESH_PROTECTED_LIBRARIES: ""
+      # The relay Jellyfin plays remote items through (assumption A-10).
+      # JELLYMESH_RELAY_URL is what Jellyfin connects to and what every .strm
+      # names. The relay serves only the allowed client addresses: with
+      # Jellyfin on the host network, its requests arrive from the Docker
+      # bridge gateway.
+      JELLYMESH_GENERATED_ROOT: "/generated"
+      JELLYMESH_RELAY_LISTEN_ADDR: "0.0.0.0:8090"
+      JELLYMESH_RELAY_URL: "http://127.0.0.1:8090"
+      JELLYMESH_RELAY_ALLOWED_CLIENTS: "127.0.0.1,172.17.0.1"
+      # Where Jellyfin sees the generated root, if it mounts it elsewhere.
+      JELLYMESH_JELLYFIN_GENERATED_ROOT: "/srv/jellymesh-generated"
+      # The most any one peer may pull from this node, in megabits per second.
+      JELLYMESH_UPLOAD_CEILING_MBPS: "20"
     extra_hosts:
       - "host.docker.internal:host-gateway"
 

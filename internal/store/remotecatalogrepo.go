@@ -152,6 +152,25 @@ func (repo *RemoteCatalogRepository) Sources(ctx context.Context) ([]string, err
 	return sources, rows.Err()
 }
 
+// All returns every record this node holds, from every source.
+func (repo *RemoteCatalogRepository) All(ctx context.Context) ([]RemoteItem, error) {
+	rows, err := repo.database.SQL().QueryContext(ctx,
+		`SELECT source_node_id, item_id, library_id, parent_id, item_type, revision, metadata FROM remote_items ORDER BY source_node_id, item_id`)
+	if err != nil {
+		return nil, fmt.Errorf("list remote items: %w", err)
+	}
+	defer rows.Close()
+	var items []RemoteItem
+	for rows.Next() {
+		var item RemoteItem
+		if err := rows.Scan(&item.SourceNodeID, &item.ItemID, &item.LibraryID, &item.ParentID, &item.ItemType, &item.Revision, &item.Metadata); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 // Items returns a source's records, optionally for one library.
 func (repo *RemoteCatalogRepository) Items(ctx context.Context, sourceNodeID string, libraryID string) ([]RemoteItem, error) {
 	statement := `SELECT source_node_id, item_id, library_id, parent_id, item_type, revision, metadata FROM remote_items WHERE source_node_id = ?`

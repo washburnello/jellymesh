@@ -385,3 +385,9 @@ func contains(values []string, want string) bool {
 	}
 	return false
 }
+
+func TestAnEmptyRootIsRefused(t *testing.T) {
+	if _, err := New("  ", relayURL, nil, nil); err == nil {
+		t.Fatal("an empty generated root would resolve to the working directory and must be refused")
+	}
+}

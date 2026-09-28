@@ -6,7 +6,7 @@ Jellymesh is a federation layer for independent Jellyfin servers, under developm
 
 - Phase 0 (feasibility) is complete; see [Phase 0 results](docs/phase-0-results.md).
 - Phase 1 (node foundation) is implemented. A node runs as a single container, forms a group with other nodes, admits new ones by invitation, keeps the replicated group log in step, derives transport trust from it, audits what it does, and backs itself up.
-- Phase 2 (source adapters and publication policy) is implemented against a fake Jellyfin. A node reads its own Jellyfin as a non-administrator service user, publishes libraries with declared root paths, never exposes a protected library, and exchanges catalogs with the other members, honouring opt-outs and blocks at both ends. Confirming the adapter against a real Jellyfin 10.11.11 is still to do (conformance M-7). Materialization into Jellyfin, and the relay that plays remote media, are Phase 3.
+- Phase 2 (source adapters and publication policy) is implemented against a fake Jellyfin. A node reads its own Jellyfin as a non-administrator service user, publishes libraries with declared root paths, never exposes a protected library, and exchanges catalogs with the other members, honouring opt-outs and blocks at both ends. Confirming the adapter against a real Jellyfin 10.11.11 is still to do (conformance M-7). - Phase 3 (materialization and relay) is implemented. Other members' items appear in the destination's own Jellyfin libraries as generated `.strm` files with NFO metadata, subtitles, and posters, one item per film with a version per source, and play through a local relay that streams from the source over mutual TLS. Nothing protected, opted out, or blocked is written or playable.
 - Progress is measured against [docs/conformance.md](docs/conformance.md); run `./scripts/verify.sh`.
 
 ## Running a node
@@ -34,6 +34,8 @@ jellymesh join -address cedar.example.org:8443 -code XXXXX-XXXXX-XXXXX-XXXXX-XXX
 jellymesh requests
 jellymesh approve <inviter-id> <invitation-id>
 ```
+
+Then, once, in Jellyfin: add each folder `jellymesh generated` lists to the matching library (the Movies folder to your Movies library, the TV Shows folder to your TV library). Jellymesh cannot make Jellyfin rescan (assumption A-12), so set Jellyfin's "Scan media library" scheduled task to an interval you are happy with, such as hourly; new remote items appear at the next scan.
 
 Afterwards, `jellymesh remote` lists what the other members publish, and `jellymesh optout <source-id> <library-id>` hides one of their libraries.
 

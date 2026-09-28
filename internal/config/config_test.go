@@ -204,3 +204,24 @@ func TestTheAdminListenerMustBeLoopback(t *testing.T) {
 		}
 	}
 }
+
+// C-PR-5: the relay URL a .strm names is a plain local URL, with no room for
+// a credential, and the relay's allowed clients and upload ceiling have
+// defaults.
+func TestRelayConfiguration(t *testing.T) {
+	cfg, err := FromLookup(lookupFrom(map[string]string{}))
+	if err != nil {
+		t.Fatalf("defaults: %v", err)
+	}
+	if cfg.RelayURL != "http://127.0.0.1:8090" || cfg.RelayAllowedClients == "" || cfg.UploadCeiling != 2_500_000 {
+		t.Fatalf("defaults = %q, %q, %d", cfg.RelayURL, cfg.RelayAllowedClients, cfg.UploadCeiling)
+	}
+	for _, bad := range []string{"ftp://x:1", "http://user:pass@127.0.0.1:8090", "http://127.0.0.1:8090/?token=1", "http://127.0.0.1:8090/path", "127.0.0.1:8090"} {
+		if _, err := FromLookup(lookupFrom(map[string]string{"JELLYMESH_RELAY_URL": bad})); err == nil {
+			t.Errorf("relay URL %q should be refused", bad)
+		}
+	}
+	if _, err := FromLookup(lookupFrom(map[string]string{"JELLYMESH_UPLOAD_CEILING_MBPS": "-1"})); err == nil {
+		t.Error("a negative ceiling should be refused")
+	}
+}

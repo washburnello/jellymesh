@@ -19,6 +19,7 @@
 //	jellymesh remote                        list other members' libraries
 //	jellymesh optout|optin <source-id> <library-id>
 //	jellymesh catalog-sync                  refresh and pull catalogs now
+//	jellymesh generated                     list the folders to add to Jellyfin's libraries
 //	jellymesh backup <file>                 write an encrypted backup
 //	jellymesh restore <file>                restore a backup into an empty data directory
 //	jellymesh healthcheck                   exit 0 if the local node answers (for container health checks)
@@ -71,7 +72,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: jellymesh serve|status|found|invite|join|requests|approve|deny|eject|promote|demote|leave|block|unblock|sync|libraries|publish|unpublish|remote|optout|optin|catalog-sync|backup|restore|healthcheck")
+	fmt.Fprintln(os.Stderr, "usage: jellymesh serve|status|found|invite|join|requests|approve|deny|eject|promote|demote|leave|block|unblock|sync|libraries|publish|unpublish|remote|optout|optin|catalog-sync|generated|backup|restore|healthcheck")
 	os.Exit(2)
 }
 
@@ -160,6 +161,8 @@ func run(cfg config.Config, command string, args []string) error {
 		return admin.print(method, "/admin/v1/optouts/"+args[0]+"/"+args[1], nil)
 	case "catalog-sync":
 		return admin.print(http.MethodPost, "/admin/v1/catalog/sync", nil)
+	case "generated":
+		return admin.print(http.MethodGet, "/admin/v1/generated", nil)
 	}
 	usage()
 	return nil
@@ -194,12 +197,30 @@ func serve(cfg config.Config) error {
 	}()
 	defer adminServer.Close()
 
+	relayHandler, err := n.RelayHandler()
+	if err != nil {
+		return err
+	}
+	relayListener, err := net.Listen("tcp", cfg.RelayListenAddress)
+	if err != nil {
+		return err
+	}
+	// No write timeout: a stream lasts as long as playback does.
+	relayServer := &http.Server{Handler: relayHandler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute}
+	go func() {
+		if err := relayServer.Serve(relayListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("relay: %v", err)
+		}
+	}()
+	defer relayServer.Close()
+
 	federationListener, err := net.Listen("tcp", cfg.FederationListenAddress)
 	if err != nil {
 		return err
 	}
-	log.Printf("jellymesh node %s (%s) federating on %s as %s, admin on %s",
-		n.NodeID(), n.Identity().Fingerprint(), cfg.FederationListenAddress, cfg.PublicAddress(), cfg.AdminListenAddress)
+	log.Printf("jellymesh node %s (%s) federating on %s as %s, admin on %s, relay on %s for %s",
+		n.NodeID(), n.Identity().Fingerprint(), cfg.FederationListenAddress, cfg.PublicAddress(), cfg.AdminListenAddress,
+		cfg.RelayListenAddress, cfg.RelayAllowedClients)
 	return n.Run(ctx, federationListener, syncpolicy.DefaultHealthInterval)
 }
 

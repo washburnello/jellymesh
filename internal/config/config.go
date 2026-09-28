@@ -13,6 +13,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -54,6 +55,21 @@ type Config struct {
 	GeneratedRootPath string
 	NodeName          string
 	FederationEnabled bool
+
+	// RelayURL is how Jellyfin reaches the relay, and what every generated
+	// .strm names. RelayAllowedClients are the addresses the relay serves
+	// (conformance.md assumption A-10).
+	RelayURL            string
+	RelayAllowedClients string
+
+	// JellyfinGeneratedRoot is the generated root as Jellyfin sees it, when
+	// Jellyfin mounts it at a different path; it is what the operator adds to
+	// Jellyfin's libraries.
+	JellyfinGeneratedRoot string
+
+	// UploadCeiling is the most bytes per second this node sends any one
+	// destination, across all its streams (assumption A-1). Zero is no limit.
+	UploadCeiling int64
 }
 
 func Load() (Config, error) {
@@ -127,6 +143,19 @@ func FromLookup(lookup func(string) (string, bool)) (Config, error) {
 	if (cfg.JellyfinUser == "") != (cfg.JellyfinPassword == "") {
 		return Config{}, fmt.Errorf("JELLYMESH_JELLYFIN_USER and JELLYMESH_JELLYFIN_PASSWORD must be set together")
 	}
+
+	cfg.RelayURL = strings.TrimRight(valueOrDefault(lookup, "JELLYMESH_RELAY_URL", "http://"+cfg.RelayListenAddress), "/")
+	if parsed, err := url.Parse(cfg.RelayURL); err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") ||
+		parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return Config{}, fmt.Errorf("JELLYMESH_RELAY_URL must be a plain http(s)://host:port URL, not %q", cfg.RelayURL)
+	}
+	cfg.RelayAllowedClients = valueOrDefault(lookup, "JELLYMESH_RELAY_ALLOWED_CLIENTS", "127.0.0.0/8,::1")
+	cfg.JellyfinGeneratedRoot = valueOrDefault(lookup, "JELLYMESH_JELLYFIN_GENERATED_ROOT", cfg.GeneratedRootPath)
+	megabits, err := strconv.ParseFloat(valueOrDefault(lookup, "JELLYMESH_UPLOAD_CEILING_MBPS", "20"), 64)
+	if err != nil || megabits < 0 {
+		return Config{}, fmt.Errorf("JELLYMESH_UPLOAD_CEILING_MBPS must be a number of megabits per second, 0 for no limit")
+	}
+	cfg.UploadCeiling = int64(megabits * 1_000_000 / 8)
 
 	federationEnabledValue := valueOrDefault(lookup, "JELLYMESH_FEDERATION_ENABLED", "false")
 	if cfg.FederationEnabled, err = strconv.ParseBool(federationEnabledValue); err != nil {

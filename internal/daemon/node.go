@@ -25,6 +25,7 @@ import (
 	groupwatch "jellymesh/internal/group"
 	"jellymesh/internal/grouplog"
 	"jellymesh/internal/jellyfin"
+	"jellymesh/internal/materialize"
 	"jellymesh/internal/membership"
 	"jellymesh/internal/node"
 	"jellymesh/internal/policy"
@@ -66,6 +67,9 @@ type Node struct {
 	source   *sourcecatalog.Catalog
 	remote   *store.RemoteCatalogRepository
 	syncs    *store.SyncRepository
+
+	materialized *store.MaterializedRepository
+	materializer *materialize.Materializer
 
 	mutex sync.Mutex
 	clock func() time.Time
@@ -147,6 +151,11 @@ func Open(ctx context.Context, cfg config.Config, logger *log.Logger) (*Node, er
 		n.jellyfin = jellyfin.New(cfg.JellyfinBaseURL, cfg.JellyfinUser, cfg.JellyfinPassword, n.nodeID)
 		n.source = sourcecatalog.New(n.jellyfin, store.NewSourceCatalogRepository(database), cfg.ProtectedLibraries, n.audit)
 	}
+	n.materialized = store.NewMaterializedRepository(database)
+	if n.materializer, err = materialize.New(cfg.GeneratedRootPath, cfg.RelayURL, n.materialized, sourceAccess{n}); err != nil {
+		database.Close()
+		return nil, err
+	}
 	groupIDs, err := n.logs.ListGroupIDs(ctx)
 	if err != nil {
 		database.Close()
@@ -206,7 +215,7 @@ func (n *Node) attach(ctx context.Context, groupID string, group *membership.Gro
 	n.mutex.Lock()
 	n.group = &groupRuntime{
 		id: groupID, group: group, inviter: inviter, watch: watch, attestations: map[string]grouplog.Attestation{},
-		catalogServer: catalogsync.NewServer(n.source, group, groupID, n.peers),
+		catalogServer: n.newCatalogServer(group, groupID),
 		destination:   catalogsync.NewDestination(n.remote, n.syncs, n.client, groupID, n.audit),
 	}
 	n.mutex.Unlock()

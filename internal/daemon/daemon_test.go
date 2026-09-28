@@ -58,6 +58,9 @@ func startDaemonWith(t *testing.T, name string, dataDir string, address string, 
 		DataDirectory:           dataDir,
 		NodeKeyPath:             filepath.Join(dataDir, "node.key"),
 		NodeCertPath:            filepath.Join(dataDir, "node.crt"),
+		GeneratedRootPath:       filepath.Join(dataDir, "generated"),
+		RelayURL:                "http://127.0.0.1:8090",
+		RelayAllowedClients:     "127.0.0.0/8,::1",
 	}
 	if configure != nil {
 		configure(&cfg)
@@ -537,5 +540,151 @@ func TestCatalogsFlowBetweenMembersThroughTheDaemon(t *testing.T) {
 	}
 	if len(events) == 0 {
 		t.Fatal("expected audit events")
+	}
+}
+
+// materializedStrm finds the one generated .strm whose name contains label.
+func materializedStrm(t *testing.T, root string, label string) (string, string) {
+	t.Helper()
+	var found, content string
+	filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err == nil && strings.HasSuffix(path, ".strm") && strings.Contains(filepath.Base(path), label) {
+			data, _ := os.ReadFile(path)
+			found, content = path, strings.TrimSpace(string(data))
+		}
+		return nil
+	})
+	return found, content
+}
+
+func relayGet(t *testing.T, relayBase string, strmURL string, rangeHeader string) (int, []byte) {
+	t.Helper()
+	target := relayBase + strmURL[strings.Index(strmURL, "/r/"):]
+	request, _ := http.NewRequest(http.MethodGet, target, nil)
+	if rangeHeader != "" {
+		request.Header.Set("Range", rangeHeader)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("relay: %v", err)
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	return response.StatusCode, body
+}
+
+// C-OP-8: a remote item plays through the whole chain. cedar publishes it;
+// walnut materializes a .strm, a subtitle, and a poster; a request to
+// walnut's relay with the .strm's URL returns cedar's bytes, ranges included.
+// Opting out, a block from either side, and a protected library all keep it
+// from playing, and nothing protected is ever written.
+func TestARemoteItemPlaysThroughTheWholeChain(t *testing.T) {
+	cedarJellyfin, walnutJellyfin := jellyfintest.New(), jellyfintest.New()
+	defer cedarJellyfin.Close()
+	defer walnutJellyfin.Close()
+	cedarJellyfin.AddLibrary("lib-movies", "Movies", "movies")
+	cedarJellyfin.AddLibrary("lib-family", "Family Movies", "movies")
+	cedarJellyfin.AddUser("jellymesh", "service-user-password-for-tests", false, "lib-movies", "lib-family")
+	cedarJellyfin.AddItem("lib-movies", jellyfin.Item{ID: "movie-1", Name: "Probe Film", ProductionYear: 2001, Type: "Movie",
+		Path: "/media/movies/probe.mkv", ProviderIDs: map[string]string{"Tmdb": "603"}})
+	media := bytes.Repeat([]byte("frame"), 300_000)
+	cedarJellyfin.SetMedia("movie-1", media)
+	cedarJellyfin.AddSubtitle("movie-1", 2, "eng", "1\n00:00:01,000 --> 00:00:02,000\nHello\n")
+	cedarJellyfin.SetImage("movie-1", []byte("poster"))
+	cedarJellyfin.AddItem("lib-family", jellyfin.Item{ID: "family-1", Name: "Birthday", Type: "Movie", Path: "/media/family/1.mkv"})
+	cedarJellyfin.SetMedia("family-1", []byte("private"))
+	walnutJellyfin.AddLibrary("lib-docs", "Documentaries", "movies")
+	walnutJellyfin.AddUser("jellymesh", "service-user-password-for-tests", false, "lib-docs")
+	walnutJellyfin.AddItem("lib-docs", jellyfin.Item{ID: "doc-1", Name: "Oceans", Type: "Movie", Path: "/media/docs/oceans.mkv"})
+
+	cedar := startDaemonWith(t, "cedar", t.TempDir(), "127.0.0.1:0", withServiceUser(cedarJellyfin, "lib-family"))
+	walnutDir := t.TempDir()
+	walnut := startDaemonWith(t, "walnut", walnutDir, "127.0.0.1:0", withServiceUser(walnutJellyfin))
+	cedar.must(http.MethodPost, "/admin/v1/group", FoundRequest{GroupID: "group-1"}, nil)
+	cedar.must(http.MethodPost, "/admin/v1/publications", PublishRequest{LibraryID: "lib-movies", Roots: []string{"/media/movies"}}, nil)
+	walnut.must(http.MethodPost, "/admin/v1/publications", PublishRequest{LibraryID: "lib-docs", Roots: []string{"/media/docs"}}, nil)
+	joinOffering(t, cedar, walnut, cedar, nil)
+	cedar.catalogSync()
+	result := walnut.catalogSync()
+	if result.Materialized.Written != 1 {
+		t.Fatalf("walnut should materialize cedar's film: %+v", result.Materialized)
+	}
+
+	root := filepath.Join(walnutDir, "generated")
+	strmPath, strmURL := materializedStrm(t, root, " - cedar")
+	if strmPath == "" || !strings.HasPrefix(strmURL, "http://127.0.0.1:8090/r/") {
+		t.Fatalf("no .strm for cedar's film, or wrong content: %q %q", strmPath, strmURL)
+	}
+	folder := filepath.Dir(strmPath)
+	if _, err := os.Stat(filepath.Join(folder, strings.TrimSuffix(filepath.Base(strmPath), ".strm")+".eng.srt")); err != nil {
+		t.Fatal("the subtitle should be copied beside the .strm")
+	}
+	if content, _ := os.ReadFile(filepath.Join(folder, "poster.jpg")); string(content) != "poster" {
+		t.Fatal("the poster should be copied")
+	}
+	if walnutJellyfin.Notices() == 0 {
+		t.Fatal("walnut should tell its Jellyfin what changed")
+	}
+
+	handler, err := walnut.node.RelayHandler()
+	if err != nil {
+		t.Fatalf("relay: %v", err)
+	}
+	relayServer := httptest.NewServer(handler)
+	defer relayServer.Close()
+
+	if status, body := relayGet(t, relayServer.URL, strmURL, ""); status != http.StatusOK || !bytes.Equal(body, media) {
+		t.Fatalf("whole file through the relay: status %d, %d of %d bytes", status, len(body), len(media))
+	}
+	if status, body := relayGet(t, relayServer.URL, strmURL, "bytes=1000-1999"); status != http.StatusPartialContent || !bytes.Equal(body, media[1000:2000]) {
+		t.Fatalf("range through the relay: status %d, %d bytes", status, len(body))
+	}
+
+	// Nothing of the protected library was written anywhere.
+	filepath.WalkDir(root, func(path string, _ os.DirEntry, _ error) error {
+		if strings.Contains(path, "Birthday") {
+			t.Fatalf("a protected item was materialized: %s", path)
+		}
+		return nil
+	})
+
+	// Opting out withdraws it at once, before any catalog pass removes the
+	// .strm: the relay asks the policy on every request.
+	walnut.must(http.MethodPut, "/admin/v1/optouts/"+cedar.node.NodeID()+"/lib-movies", nil, nil)
+	if status, _ := relayGet(t, relayServer.URL, strmURL, "bytes=0-9"); status != http.StatusNotFound {
+		t.Fatalf("an opted-out item before the next pass: status %d, want 404", status)
+	}
+	walnut.catalogSync()
+	if path, _ := materializedStrm(t, root, " - cedar"); path != "" {
+		t.Fatal("an opted-out item's .strm must be removed")
+	}
+	if status, _ := relayGet(t, relayServer.URL, strmURL, ""); status != http.StatusNotFound {
+		t.Fatalf("an opted-out item's old reference: status %d, want 404", status)
+	}
+	walnut.must(http.MethodDelete, "/admin/v1/optouts/"+cedar.node.NodeID()+"/lib-movies", nil, nil)
+	walnut.catalogSync()
+	_, strmURL = materializedStrm(t, root, " - cedar")
+	if status, _ := relayGet(t, relayServer.URL, strmURL, "bytes=0-9"); status != http.StatusPartialContent {
+		t.Fatalf("after opting back in: status %d", status)
+	}
+
+	// cedar blocks walnut: the source's listener answers not-found to a key it
+	// no longer serves, and the relay passes the refusal on.
+	cedar.must(http.MethodPut, "/admin/v1/blocks/"+walnut.node.NodeID(), nil, nil)
+	if status, body := relayGet(t, relayServer.URL, strmURL, "bytes=0-9"); status != http.StatusNotFound || len(body) > 100 {
+		t.Fatalf("a source that has blocked this node: status %d, want 404", status)
+	}
+	cedar.must(http.MethodDelete, "/admin/v1/blocks/"+walnut.node.NodeID(), nil, nil)
+
+	// walnut blocks cedar: walnut's own policy refuses before any request,
+	// and the next pass withdraws cedar's items, which a block alone does not
+	// delete from the catalog.
+	walnut.must(http.MethodPut, "/admin/v1/blocks/"+cedar.node.NodeID(), nil, nil)
+	if status, _ := relayGet(t, relayServer.URL, strmURL, "bytes=0-9"); status != http.StatusNotFound {
+		t.Fatalf("a source this node has blocked: status %d, want 404", status)
+	}
+	walnut.catalogSync()
+	if path, _ := materializedStrm(t, root, " - cedar"); path != "" {
+		t.Fatal("a blocked source's items must be withdrawn from the generated root")
 	}
 }

@@ -90,6 +90,7 @@ func (n *Node) AdminHandler(token string) http.Handler {
 	api.HandleFunc("PUT /admin/v1/optouts/{source}/{library}", n.adminOptOut(true))
 	api.HandleFunc("DELETE /admin/v1/optouts/{source}/{library}", n.adminOptOut(false))
 	api.HandleFunc("POST /admin/v1/catalog/sync", n.adminCatalogSync)
+	api.HandleFunc("GET /admin/v1/generated", n.adminGenerated)
 	mux.Handle("/admin/", requireToken(token, api))
 	return mux
 }
@@ -457,4 +458,8 @@ func (n *Node) adminCatalogSync(response http.ResponseWriter, request *http.Requ
 		return
 	}
 	writeJSON(response, http.StatusOK, result)
+}
+
+func (n *Node) adminGenerated(response http.ResponseWriter, _ *http.Request) {
+	writeJSON(response, http.StatusOK, n.GeneratedRoots())
 }

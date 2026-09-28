@@ -8,6 +8,7 @@ import (
 	"jellymesh/internal/catalogsync"
 	"jellymesh/internal/grouplog"
 	"jellymesh/internal/jellyfin"
+	"jellymesh/internal/materialize"
 	"jellymesh/internal/policy"
 	"jellymesh/internal/replication"
 	"jellymesh/internal/sourcecatalog"
@@ -122,8 +123,9 @@ func (n *Node) otherMemberRecords(runtime *groupRuntime) []memberPeer {
 
 // CatalogResult reports one catalog pass.
 type CatalogResult struct {
-	Sources map[string]catalogsync.Result `json:"sources"`
-	Failed  map[string]string             `json:"failed,omitempty"`
+	Sources      map[string]catalogsync.Result `json:"sources"`
+	Failed       map[string]string             `json:"failed,omitempty"`
+	Materialized materialize.Result            `json:"materialized"`
 }
 
 // SyncCatalogOnce refreshes this node's own catalog from Jellyfin and pulls
@@ -184,6 +186,11 @@ func (n *Node) SyncCatalogOnce(ctx context.Context) (CatalogResult, error) {
 		state.Reconcile(roster)
 		return nil
 	})
+	if err != nil {
+		return result, err
+	}
+	materialized, err := n.Materialize(ctx)
+	result.Materialized = materialized
 	return result, err
 }
 
