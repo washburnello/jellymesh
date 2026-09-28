@@ -156,6 +156,10 @@ behind them. They are listed so that the gap is explicit rather than implied.
 | C-PB-1 | The relay supports range requests, HEAD, cancellation, and backpressure without full-file buffering | PENDING — byte-exact pass-through measured in phase-0-results.md section 7 |
 | C-PB-2 | An unavailable source fails playback cleanly without destructive catalog pruning | PENDING |
 | C-PB-3 | A source enforces a bandwidth ceiling per destination | PENDING — see assumption A-1 |
+| C-MA-4 | Removing a generated item deletes only paths inside the generated root and revokes its relay reference in the same step, so a withdrawn item is unplayable at once | none yet | PENDING |
+| C-MA-5 | A movie with a strong identity from several sources is materialized in one folder with one source-named file per source, and a movie without one never shares a folder | none yet | PENDING — layout confirmed on 10.11.11 (M-8) |
+| C-PB-4 | A stream above a destination's bandwidth ceiling is served as a source-side transcode rather than throttled | none yet | PENDING — the second half of assumption A-1 |
+| C-PB-5 | Jellyfin's repeated probe of a remote item on every PlaybackInfo does not repeatedly cross the source's uplink | none yet | PENDING — phase-0-results.md A1-a measured about 1 MB per call |
 | C-OP-1 | Audit events are recorded with secrets redacted: detail outside an allow-list of identifiers and outcomes is replaced, registered secret material is scrubbed from every field, and enrollment, group log changes including equivocation, and block decisions are audited without the invitation secret appearing in any encoding | `TestSecretsNeverReachTheSink`, `TestEnrollmentIsAuditedWithoutSecrets`, `TestGroupChangesAreAudited`, `TestBlockDecisionsAreAudited`, `TestAuditRepositoryRoundTrip` | PASS |
 | C-OP-2 | Compromise recovery is by re-enrollment: a fresh key is a distinct peer, and readmission requires a new invitation and fresh approval | DECIDED — see design-spec.md section 8. The mechanism it relies on is covered by C-ID-3, C-TR-4, C-TR-7 and C-PO-5; C-OP-3 is in place and the runbook is C-OP-4 |
 | C-OP-3 | Ejecting a member also revokes its transport trust on every node that applies the ejection, so a compromised key cannot complete a handshake; an ejection by a non-administrator changes nothing | `TestEjectionRevokesTrustOnEveryNode`, `TestReceiversReapplyTheRoleRules` | PASS |
@@ -258,6 +262,37 @@ instead of a silent leak.
 Cost: the operator has to know their library folders. A wrong declaration
 fails safe, because publication is refused or paused rather than widened.
 
+**A-10. Relay authorization (C-PR-5).**
+Assumed: the local relay serves only allow-listed client addresses (loopback
+by default, plus the address Jellyfin connects from in a container
+deployment), and only for random 128-bit references the materializer issued
+and has not revoked. It re-checks the destination's policy on every request,
+and the source re-checks membership, blocks, and the item's live library.
+Rationale: Jellyfin forwards no credential when it opens a `.strm`, and a
+local user can read the `.strm` URL. So the URL cannot be the credential, and
+the network position of the caller has to be.
+Cost: a deployment where Jellyfin reaches the relay through a NAT address has
+to add that address to `JELLYMESH_RELAY_ALLOWED_CLIENTS`.
+
+**A-11. Generated layout (C-MA-2, C-MA-5).**
+Assumed: the layout in design-spec section 9, "Materialization and relay".
+Folder names carry a Jellymesh-internal ID and never a provider ID. A movie
+with a strong identity shares one folder across sources, with files named
+`<folder> - <source>` so Jellyfin shows one item with one version per source.
+Rationale: confirmed on 10.11.11 in M-8. It also delivers source-labelled
+versions without the administrator-only merge API that A-4 anticipated.
+Cost: merging a remote version with a local copy of the same film still
+needs that API, and is left to Phase 4.
+
+**A-12. Detection by Jellyfin's scheduled scan.**
+Assumed: Jellymesh sends Jellyfin a best-effort change notice and relies on
+its scheduled library scan, whose interval the operator sets.
+Rationale: a non-administrator cannot trigger a refresh, and the real-time
+monitor did not fire in the lab (M-8). Holding an administrator credential
+to force a refresh would undo A-8.
+Cost: a new remote item appears only at the next scan. A withdrawn one stops
+being playable at once but stays listed until then.
+
 **A-5. Group state replication (C-PO-14 to C-PO-20, C-TR-9).**
 Assumed: group state (owner, epoch, administrators, the roster bound to
 fingerprints, ejections, group defaults) is derived by replaying an
@@ -292,3 +327,4 @@ Not provable by unit test. These are the Phase 5 gates.
 | M-5 | A first join to a group of realistic size completes in an acceptable time | A real catalog size | Half-measured: the rate is 4.72 items/second (phase-0-results.md section 4); only the item count is missing |
 | M-6 | The container image builds, starts as a non-root user with a writable data volume, reports healthy, and is administered through `docker exec` | Docker | Performed 2026-09-26 against `deploy/docker-compose.yml`'s image: built, healthy within seconds, a group founded and reported through `/jellymesh status` inside the container. Repeat after changes to the Dockerfile |
 | M-7 | The source adapter's routes and fields behave against real Jellyfin 10.11.11 as the fake assumes: `/UserViews`, `/Items` with `ParentId` paging and the `Path` and `Etag` fields, `/Items/{id}/Ancestors`, an administrator route refused, and token refusal leading to re-authentication, for a non-administrator user | Docker | Performed 2026-09-27 with `lab/adaptercheck/run-throwaway.sh`: a fresh container, metadata fetchers off, two granted libraries and one withheld. All 13 checks passed; the withheld library was invisible. Repeat on every Jellyfin upgrade |
+| M-8 | Jellyfin 10.11.11 treats generated artifacts as the layout assumes, and a non-administrator can use the source media routes | Docker | Performed 2026-09-28 with `lab/materializecheck/run-throwaway.sh`. The title and year come from the NFO. A `[jmid-…]` folder tag stays out of the name. Only the legacy `<tmdbid>` NFO element sets the provider ID. Dot-prefixed temporary files are ignored. Two `<folder> - <source>.strm` files make one item with versions labelled by source. A sidecar `.srt` attaches to its version. A non-administrator gets 403 from `/Library/Refresh` and `/Items/{library}/Refresh`, 204 but no effect from `/Library/Media/Updated`, and 206 with ranges from `/Videos/{id}/stream?static=true`. HEAD returns length and type, and the subtitle route returns 200. The real-time monitor did not detect new content within 150 s, even a real `.mkv` on btrfs after a restart. Repeat on every Jellyfin upgrade |

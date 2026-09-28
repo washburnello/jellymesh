@@ -804,6 +804,106 @@ The relay must support:
 
 Direct client-to-provider playback may be evaluated later. It would reduce consumer egress but would require a different authorization and client-compatibility model. Direct play is unrestricted in v1; the default remote-transcoding policy allows one concurrent transcode per destination, with configurable overrides.
 
+### Materialization and relay (Phase 3)
+
+Status: assumed (conformance.md assumptions A-10 to A-12), 2026-09-28. It
+rests on a probe of Jellyfin 10.11.11 recorded as conformance M-8
+(`lab/materializecheck/run-throwaway.sh`).
+
+#### The generated layout (A-11)
+
+The destination writes one generated root per collection type, and the
+operator adds each root to the matching existing Jellyfin library once:
+
+```text
+<generated>/Movies/<Title> (<Year>) [jmid-<id>]/
+    movie.nfo
+    <Title> (<Year>) [jmid-<id>] - Cedar.strm
+    <Title> (<Year>) [jmid-<id>] - Cedar.en.srt
+    <Title> (<Year>) [jmid-<id>] - Walnut.strm
+    poster.jpg
+<generated>/TV Shows/<Series> [jmid-<id>]/
+    tvshow.nfo
+    Season 01/<Series> S01E01 - Cedar.strm
+    Season 01/<Series> S01E01 - Cedar.nfo
+```
+
+- **Folder IDs.** `<id>` is a Jellymesh-internal identifier derived from the
+  work's identity. No provider identifier appears in a path (A-2): Phase 0
+  showed a `[tmdbid-…]` folder tag pulling unrelated, even adult, titles into a
+  library. Provider identifiers go in the NFO only, as both `<uniqueid>` and
+  the legacy `<tmdbid>`, `<imdbid>`, `<tvdbid>` elements, because on 10.11.11
+  only the legacy elements took effect.
+- **Versions.** A movie with a strong identity shares one folder across
+  sources. Each file is named `<exact folder name> - <source name>`, so
+  Jellyfin shows one item with one version per source, labelled with the
+  source's name. M-8 confirmed this. A movie without a strong identity gets a
+  folder per source item, and so never merges on title alone. Series stay per
+  source for now; grouping episodes across sources is Phase 4.
+- **What a file holds.** A `.strm` holds only a local relay URL with an opaque
+  reference. It never holds a peer address, a key, or a token (C-PR-3).
+- **Subtitles and artwork.** External subtitles are copied beside their
+  `.strm`, because Jellyfin must find a subtitle file on disk to list it
+  (Phase 0, C-MA-3). Embedded subtitles travel inside the stream. The source's
+  primary image is copied as `poster.jpg`.
+- **Atomic writes.** Every file is written to a dot-prefixed temporary name
+  and renamed into place. M-8 confirmed Jellyfin ignores dot-prefixed files.
+  The NFO is written before the `.strm`, so Jellyfin never finds a reference
+  without its metadata (C-MA-1).
+- **Removal.** Removing an item deletes only paths inside the generated root,
+  and revokes the relay reference in the same step.
+
+#### Detection by Jellyfin (A-12)
+
+Jellymesh cannot make Jellyfin rescan. A non-administrator is refused
+`/Library/Refresh` and `/Items/{library}/Refresh` (403). In the lab the
+real-time monitor did not notice new files within two and a half minutes,
+even for a real media file on a real disk. `POST /Library/Media/Updated` is
+accepted from a non-administrator (204) but had no effect.
+
+So Jellymesh sends that notice anyway, since it is cheap and may help where
+monitoring works, and relies on Jellyfin's scheduled library scan, whose
+interval the operator sets (hourly is suggested). What this means in
+practice:
+
+- a newly materialized item appears at the next scan;
+- a withdrawn item stops being **playable at once**, because its `.strm` and
+  its relay reference are gone;
+- a withdrawn item stops being **listed** at the next scan.
+
+#### The relay (A-10)
+
+The destination runs a local relay. Jellyfin fetches `.strm` URLs from it
+with plain HTTP, and it forwards each request to the source over mutual TLS.
+
+- **Authorization.** A local user can read a `.strm`'s URL through Jellyfin
+  (Phase 0), so the URL must not be a credential, and a loopback bind alone is
+  not enough once Jellyfin and Jellymesh run in separate network namespaces.
+  The relay therefore accepts a request only from an allow-listed client
+  address (loopback by default; the deployment adds Jellyfin's address), and
+  only for a 128-bit random reference issued by the materializer and not yet
+  revoked. A reference names an item without authorizing anyone. The
+  allow-list and the destination's own policy decide.
+- **Checks on every request.** The destination re-checks its policy: the
+  source is a member, is not blocked, and the library is published and not
+  opted out. The source re-checks the caller's membership and block, and
+  re-resolves the item's library from live Jellyfin state
+  (`sourcecatalog.Authorize`), because Jellyfin's stream route ignores
+  library permissions.
+- **The media route.** The source serves
+  `GET|HEAD /jellymesh/v1/groups/{group}/media/{item}` by relaying Jellyfin's
+  `/Videos/{item}/stream?static=true` as the service user. M-8 confirmed this
+  route honours ranges and HEAD for a non-administrator. Subtitles and images
+  have sibling routes.
+- **Stream behaviour.** The relay passes through `Range`, `HEAD`,
+  `Content-Range`, `Content-Length`, `Content-Type`, and `Accept-Ranges`. It
+  never buffers a whole file, and it stops reading from the source as soon as
+  Jellyfin disconnects (C-PB-1). An unreachable source answers 502 with a
+  plain reason and changes no catalog or artifact state (C-PB-2).
+- **Bandwidth ceiling.** The source enforces a per-destination ceiling on the
+  bytes it sends (C-PB-3). Serving a stream above the ceiling as a source-side
+  transcode, the second half of A-1, is a later step (C-PB-4).
+
 ## 12. Availability and heartbeat behavior
 
 Each Jellymesh Service maintains provider state:
