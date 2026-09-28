@@ -391,3 +391,14 @@ func TestAnEmptyRootIsRefused(t *testing.T) {
 		t.Fatal("an empty generated root would resolve to the working directory and must be refused")
 	}
 }
+
+// M-9 found a source title that already ends with its year, which gave
+// "Title (2001) (2001)".
+func TestAYearIsNotRepeated(t *testing.T) {
+	if name := folderName("Probe Film (2001)", 2001, "x"); strings.Count(name, "(2001)") != 1 {
+		t.Fatalf("folder name %q repeats the year", name)
+	}
+	if name := folderName("Probe Film", 2001, "x"); !strings.HasPrefix(name, "Probe Film (2001) [jmid-") {
+		t.Fatalf("folder name %q", name)
+	}
+}

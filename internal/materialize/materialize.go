@@ -344,7 +344,9 @@ func short(id string) string {
 func folderName(title string, year int, identity string) string {
 	sum := sha256.Sum256([]byte(identity))
 	name := sanitize(title)
-	if year > 0 {
+	// A title that already ends with its year, as Jellyfin reports when it
+	// named the item from a "Title (Year)" folder, keeps just the one.
+	if year > 0 && !strings.HasSuffix(name, "("+strconv.Itoa(year)+")") {
 		name += " (" + strconv.Itoa(year) + ")"
 	}
 	return name + " [jmid-" + hex.EncodeToString(sum[:])[:10] + "]"

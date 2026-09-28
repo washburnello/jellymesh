@@ -58,3 +58,15 @@ metadata disabled and random credentials that are never printed:
 ```
 
 Run it after every Jellyfin upgrade.
+
+## Whole-chain playback check (M-9)
+
+`lab/playcheck/run-throwaway.sh` runs the full chain against real Jellyfin in
+the container deployment. It sets up a source Jellyfin and a destination
+Jellyfin, plus two Jellymesh nodes built from the current tree, on an
+isolated Docker network. It then checks that the destination Jellyfin plays
+the source's exact bytes through the relay. Everything is removed afterwards:
+
+```bash
+./lab/playcheck/run-throwaway.sh "lab/media/local-movies/<any>.mkv"
+```
