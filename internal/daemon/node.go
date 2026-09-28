@@ -29,6 +29,7 @@ import (
 	"jellymesh/internal/membership"
 	"jellymesh/internal/node"
 	"jellymesh/internal/policy"
+	"jellymesh/internal/relay"
 	"jellymesh/internal/replication"
 	"jellymesh/internal/sourcecatalog"
 	"jellymesh/internal/store"
@@ -70,6 +71,7 @@ type Node struct {
 
 	materialized *store.MaterializedRepository
 	materializer *materialize.Materializer
+	heads        *relay.HeadCache
 
 	mutex sync.Mutex
 	clock func() time.Time
@@ -155,6 +157,13 @@ func Open(ctx context.Context, cfg config.Config, logger *log.Logger) (*Node, er
 	if n.materializer, err = materialize.New(cfg.GeneratedRootPath, cfg.RelayURL, n.materialized, sourceAccess{n}); err != nil {
 		database.Close()
 		return nil, err
+	}
+	if cfg.HeadCacheBytes >= relay.DefaultHeadSize {
+		if n.heads, err = relay.NewHeadCache(filepath.Join(cfg.DataDirectory, "cache", "heads"), relay.DefaultHeadSize, cfg.HeadCacheBytes); err != nil {
+			database.Close()
+			return nil, err
+		}
+		n.materializer.OnRemove = n.heads.Remove
 	}
 	groupIDs, err := n.logs.ListGroupIDs(ctx)
 	if err != nil {

@@ -70,6 +70,11 @@ type Config struct {
 	// UploadCeiling is the most bytes per second this node sends any one
 	// destination, across all its streams (assumption A-1). Zero is no limit.
 	UploadCeiling int64
+
+	// HeadCacheBytes bounds the relay's cache of each remote item's first
+	// bytes, which keeps Jellyfin's repeated probes off sources' uplinks
+	// (C-PB-5). Zero turns the cache off.
+	HeadCacheBytes int64
 }
 
 func Load() (Config, error) {
@@ -156,6 +161,11 @@ func FromLookup(lookup func(string) (string, bool)) (Config, error) {
 		return Config{}, fmt.Errorf("JELLYMESH_UPLOAD_CEILING_MBPS must be a number of megabits per second, 0 for no limit")
 	}
 	cfg.UploadCeiling = int64(megabits * 1_000_000 / 8)
+	megabytes, err := strconv.ParseInt(valueOrDefault(lookup, "JELLYMESH_HEAD_CACHE_MB", "1024"), 10, 64)
+	if err != nil || megabytes < 0 {
+		return Config{}, fmt.Errorf("JELLYMESH_HEAD_CACHE_MB must be a whole number of megabytes, 0 to turn the cache off")
+	}
+	cfg.HeadCacheBytes = megabytes << 20
 
 	federationEnabledValue := valueOrDefault(lookup, "JELLYMESH_FEDERATION_ENABLED", "false")
 	if cfg.FederationEnabled, err = strconv.ParseBool(federationEnabledValue); err != nil {

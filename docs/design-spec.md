@@ -900,6 +900,20 @@ with plain HTTP, and it forwards each request to the source over mutual TLS.
   never buffers a whole file, and it stops reading from the source as soon as
   Jellyfin disconnects (C-PB-1). An unreachable source answers 502 with a
   plain reason and changes no catalog or artifact state (C-PB-2).
+- **Head cache.** Jellyfin probes a remote item on every PlaybackInfo, which
+  clients send when an item's page opens, and each probe reads about a
+  megabyte from the start (Phase 0, A1-a). So the relay keeps the first 4 MiB
+  of each item it has served, per catalog revision, on disk under a total cap
+  with least-recently-used eviction (`JELLYMESH_HEAD_CACHE_MB`, 1 GiB by
+  default). A request starting inside the head is answered from it.
+  Anything past the head is fetched with one range request starting where the
+  head ends, opened only if the client is still there a moment after the head
+  was sent. The cache saves bytes and never decides access. Every hit is first
+  confirmed with the source by a bodiless HEAD, which runs the source's full
+  authorization and shows the file is still the size the head was cut from.
+  So a probe costs a HEAD instead of a megabyte, and a block, a withdrawal,
+  or a replaced file takes effect immediately (C-PB-5). A withdrawn item's
+  head is deleted with it.
 - **Bandwidth ceiling.** The source enforces a per-destination ceiling on the
   bytes it sends (C-PB-3). Serving a stream above the ceiling as a source-side
   transcode, the second half of A-1, is a later step (C-PB-4).

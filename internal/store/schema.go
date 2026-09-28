@@ -310,6 +310,13 @@ var migrations = []string{
 		PRIMARY KEY (source_node_id, item_id)
 	);
 	`,
+
+	// 12: the revision each materialized item was written at, so that the
+	// relay's cache of an item's first bytes is never served for a different
+	// revision of it.
+	`
+	ALTER TABLE materialized ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;
+	`,
 }
 
 func (database *DB) migrate(ctx context.Context) error {

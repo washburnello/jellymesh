@@ -224,4 +224,7 @@ func TestRelayConfiguration(t *testing.T) {
 	if _, err := FromLookup(lookupFrom(map[string]string{"JELLYMESH_UPLOAD_CEILING_MBPS": "-1"})); err == nil {
 		t.Error("a negative ceiling should be refused")
 	}
+	if cfg.HeadCacheBytes != 1024<<20 {
+		t.Errorf("the head cache should default to 1 GiB, got %d", cfg.HeadCacheBytes)
+	}
 }

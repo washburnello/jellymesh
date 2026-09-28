@@ -59,6 +59,11 @@ type Materializer struct {
 	// beforeRename, when set, runs just before a finished file is renamed
 	// into place. Tests use it to observe that nothing is visible early.
 	beforeRename func(target string)
+
+	// OnRemove, when set, runs after an item's reference is revoked, so that
+	// anything held for it elsewhere, such as the relay's cache of its first
+	// bytes, can be dropped too.
+	OnRemove func(store.Materialized)
 }
 
 // New returns a materializer for root, writing .strm files that name
@@ -171,10 +176,10 @@ func (materializer *Materializer) Reconcile(ctx context.Context, input Input) (R
 			result.Written++
 			changed[topFolder(plan.strm)] = true
 		}
-		if !known || record.Path != plan.strm {
+		if !known || record.Path != plan.strm || record.Revision != plan.item.Revision {
 			if err := materializer.records.Save(ctx, store.Materialized{
 				SourceNodeID: plan.item.SourceNodeID, ItemID: plan.item.ItemID, LibraryID: plan.item.LibraryID,
-				Reference: reference, Path: plan.strm, Checksum: checksum(plan),
+				Reference: reference, Path: plan.strm, Checksum: checksum(plan), Revision: plan.item.Revision,
 			}); err != nil {
 				return result, err
 			}
@@ -523,6 +528,9 @@ func (materializer *Materializer) remove(ctx context.Context, record store.Mater
 	}
 	if err := materializer.records.Remove(ctx, record.SourceNodeID, record.ItemID); err != nil {
 		return err
+	}
+	if materializer.OnRemove != nil {
+		materializer.OnRemove(record)
 	}
 	directory := filepath.Dir(target)
 	base := strings.TrimSuffix(filepath.Base(target), ".strm")

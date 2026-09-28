@@ -129,7 +129,11 @@ func (n *Node) RelayHandler() (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return relay.New(allowed, n.materialized, relayPolicy{n}, sourceAccess{n}, n.logger).Handler(), nil
+	server := relay.New(allowed, n.materialized, relayPolicy{n}, sourceAccess{n}, n.logger)
+	if n.heads != nil {
+		server.SetHeadCache(n.heads)
+	}
+	return server.Handler(), nil
 }
 
 // Materialize brings the generated root into line with what this node may

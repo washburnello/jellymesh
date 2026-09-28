@@ -61,6 +61,7 @@ func startDaemonWith(t *testing.T, name string, dataDir string, address string, 
 		GeneratedRootPath:       filepath.Join(dataDir, "generated"),
 		RelayURL:                "http://127.0.0.1:8090",
 		RelayAllowedClients:     "127.0.0.0/8,::1",
+		HeadCacheBytes:          64 << 20,
 	}
 	if configure != nil {
 		configure(&cfg)
@@ -638,6 +639,10 @@ func TestARemoteItemPlaysThroughTheWholeChain(t *testing.T) {
 	}
 	if status, body := relayGet(t, relayServer.URL, strmURL, "bytes=1000-1999"); status != http.StatusPartialContent || !bytes.Equal(body, media[1000:2000]) {
 		t.Fatalf("range through the relay: status %d, %d bytes", status, len(body))
+	}
+	// Again, now that the relay holds the item's head: the same bytes.
+	if status, body := relayGet(t, relayServer.URL, strmURL, ""); status != http.StatusOK || !bytes.Equal(body, media) {
+		t.Fatalf("whole file from the head cache: status %d, %d of %d bytes", status, len(body), len(media))
 	}
 
 	// Nothing of the protected library was written anywhere.

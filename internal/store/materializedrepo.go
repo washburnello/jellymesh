@@ -24,6 +24,8 @@ type Materialized struct {
 	// Checksum is of everything written for the item, so an unchanged item is
 	// not rewritten.
 	Checksum string
+	// Revision is the catalog revision the item was written at.
+	Revision uint64
 }
 
 // MaterializedRepository records what has been materialized.
@@ -47,12 +49,12 @@ func NewReference() (string, error) {
 // Save records or updates an item.
 func (repo *MaterializedRepository) Save(ctx context.Context, item Materialized) error {
 	_, err := repo.database.SQL().ExecContext(ctx, `
-		INSERT INTO materialized (source_node_id, item_id, library_id, reference, path, checksum, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO materialized (source_node_id, item_id, library_id, reference, path, checksum, revision, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (source_node_id, item_id) DO UPDATE SET
 			library_id = excluded.library_id, reference = excluded.reference,
-			path = excluded.path, checksum = excluded.checksum`,
-		item.SourceNodeID, item.ItemID, item.LibraryID, item.Reference, item.Path, item.Checksum, FormatTime(nowUTC()))
+			path = excluded.path, checksum = excluded.checksum, revision = excluded.revision`,
+		item.SourceNodeID, item.ItemID, item.LibraryID, item.Reference, item.Path, item.Checksum, item.Revision, FormatTime(nowUTC()))
 	if err != nil {
 		return fmt.Errorf("record materialized item: %w", err)
 	}
@@ -71,9 +73,9 @@ func (repo *MaterializedRepository) Remove(ctx context.Context, sourceNodeID str
 // ByReference resolves a reference.
 func (repo *MaterializedRepository) ByReference(ctx context.Context, reference string) (Materialized, bool, error) {
 	row := repo.database.SQL().QueryRowContext(ctx, `
-		SELECT source_node_id, item_id, library_id, reference, path, checksum FROM materialized WHERE reference = ?`, reference)
+		SELECT source_node_id, item_id, library_id, reference, path, checksum, revision FROM materialized WHERE reference = ?`, reference)
 	var item Materialized
-	err := row.Scan(&item.SourceNodeID, &item.ItemID, &item.LibraryID, &item.Reference, &item.Path, &item.Checksum)
+	err := row.Scan(&item.SourceNodeID, &item.ItemID, &item.LibraryID, &item.Reference, &item.Path, &item.Checksum, &item.Revision)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Materialized{}, false, nil
 	}
@@ -86,7 +88,7 @@ func (repo *MaterializedRepository) ByReference(ctx context.Context, reference s
 // All returns every materialized item.
 func (repo *MaterializedRepository) All(ctx context.Context) ([]Materialized, error) {
 	rows, err := repo.database.SQL().QueryContext(ctx, `
-		SELECT source_node_id, item_id, library_id, reference, path, checksum FROM materialized ORDER BY path`)
+		SELECT source_node_id, item_id, library_id, reference, path, checksum, revision FROM materialized ORDER BY path`)
 	if err != nil {
 		return nil, fmt.Errorf("list materialized items: %w", err)
 	}
@@ -94,7 +96,7 @@ func (repo *MaterializedRepository) All(ctx context.Context) ([]Materialized, er
 	var items []Materialized
 	for rows.Next() {
 		var item Materialized
-		if err := rows.Scan(&item.SourceNodeID, &item.ItemID, &item.LibraryID, &item.Reference, &item.Path, &item.Checksum); err != nil {
+		if err := rows.Scan(&item.SourceNodeID, &item.ItemID, &item.LibraryID, &item.Reference, &item.Path, &item.Checksum, &item.Revision); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
