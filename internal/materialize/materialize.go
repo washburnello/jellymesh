@@ -272,7 +272,7 @@ func (materializer *Materializer) plan(input Input, held map[string]store.Materi
 	}
 	used := map[string]bool{}
 	plans := materializer.planMovies(group(movies, pins, "movie"), names, used, &pinned)
-	return append(plans, materializer.planEpisodes(group(series, pins, "series"), episodes, held, used, &pinned)...), pinned
+	return append(plans, materializer.planEpisodes(group(series, pins, "series"), episodes, names, held, used, &pinned)...), pinned
 }
 
 // grouped is one work: its items in key order, and its pin, if it has one.
@@ -387,7 +387,11 @@ func (materializer *Materializer) planMovies(works []grouped, names map[string]s
 		// The folder and its NFO follow the first source, deterministically.
 		lead := versions[0]
 		folder := pinned.folder(w, "movie", MoviesFolder, lead.metadata.Name, lead.metadata.Year)
-		nfo := movieNFO(withIdentifiers(lead.metadata, w.ids))
+		sources := make([]string, 0, len(versions))
+		for _, version := range versions {
+			sources = append(sources, version.item.SourceNodeID)
+		}
+		nfo := movieNFO(withIdentifiers(lead.metadata, w.ids), sourceTags(names, sources...))
 		var poster *imageRef
 		for _, version := range versions {
 			if version.metadata.HasPrimaryImage {
@@ -427,7 +431,7 @@ func (materializer *Materializer) planMovies(works []grouped, names map[string]s
 // sources as versions of one episode (conformance M-10), so one source is
 // chosen per episode: the one already materialized while it remains, and
 // otherwise the first by source and item (A-13).
-func (materializer *Materializer) planEpisodes(works []grouped, episodes []candidate, held map[string]store.Materialized, used map[string]bool, pinned *pinning) []plan {
+func (materializer *Materializer) planEpisodes(works []grouped, episodes []candidate, names map[string]string, held map[string]store.Materialized, used map[string]bool, pinned *pinning) []plan {
 	workOf := map[string]int{}
 	for index, w := range works {
 		for _, key := range w.members {
@@ -467,11 +471,24 @@ func (materializer *Materializer) planEpisodes(works []grouped, episodes []candi
 	}
 	sort.Strings(ids)
 
+	// A show is tagged with the sources its episodes play from.
+	playing := map[int][]string{}
+	chosen := map[string]candidate{}
+	for _, id := range ids {
+		current := slots[id]
+		chosen[id] = choose(current.candidates, held)
+		playing[current.work] = append(playing[current.work], chosen[id].item.SourceNodeID)
+	}
+	showTags := map[int][]string{}
+	for work, sources := range playing {
+		showTags[work] = sourceTags(names, sources...)
+	}
+
 	folders := map[int]string{}
 	var plans []plan
 	for _, id := range ids {
 		current := slots[id]
-		chosen := choose(current.candidates, held)
+		chosen := chosen[id]
 		w := works[current.work]
 		lead := w.items[0]
 		seriesFolder, ok := folders[current.work]
@@ -490,8 +507,8 @@ func (materializer *Materializer) planEpisodes(works []grouped, episodes []candi
 			item: chosen.item, metadata: chosen.metadata,
 			strm: strm,
 			files: map[string][]byte{
-				filepath.Join(seriesFolder, "tvshow.nfo"): showNFO(withIdentifiers(lead.metadata, seriesIdentifiers(w))),
-				stem + ".nfo": episodeNFO(chosen.metadata, current.season, current.episode),
+				filepath.Join(seriesFolder, "tvshow.nfo"): showNFO(withIdentifiers(lead.metadata, seriesIdentifiers(w)), showTags[current.work]),
+				stem + ".nfo": episodeNFO(chosen.metadata, current.season, current.episode, sourceTags(names, chosen.item.SourceNodeID)),
 			},
 			subtitles: subtitleFiles(seasonFolder, filepath.Base(stem), chosen.metadata.Subtitles),
 			images:    map[string]imageRef{},
@@ -826,7 +843,12 @@ type movieDocument struct {
 	MPAA          string     `xml:"mpaa,omitempty"`
 	Premiered     string     `xml:"premiered,omitempty"`
 	Runtime       int64      `xml:"runtime,omitempty"`
+	Tagline       string     `xml:"tagline,omitempty"`
+	Rating        float64    `xml:"rating,omitempty"`
+	CriticRating  float64    `xml:"criticrating,omitempty"`
 	Genres        []string   `xml:"genre"`
+	Studios       []string   `xml:"studio"`
+	Tags          []string   `xml:"tag"`
 	UniqueIDs     []uniqueID `xml:"uniqueid"`
 	TMDB          string     `xml:"tmdbid,omitempty"`
 	IMDB          string     `xml:"imdbid,omitempty"`
@@ -839,7 +861,10 @@ type showDocument struct {
 	Title     string     `xml:"title"`
 	Year      int        `xml:"year,omitempty"`
 	Plot      string     `xml:"plot,omitempty"`
+	Rating    float64    `xml:"rating,omitempty"`
 	Genres    []string   `xml:"genre"`
+	Studios   []string   `xml:"studio"`
+	Tags      []string   `xml:"tag"`
 	UniqueIDs []uniqueID `xml:"uniqueid"`
 	TMDB      string     `xml:"tmdbid,omitempty"`
 	IMDB      string     `xml:"imdbid,omitempty"`
@@ -855,6 +880,8 @@ type episodeDocument struct {
 	Aired     string     `xml:"aired,omitempty"`
 	Plot      string     `xml:"plot,omitempty"`
 	Runtime   int64      `xml:"runtime,omitempty"`
+	Rating    float64    `xml:"rating,omitempty"`
+	Tags      []string   `xml:"tag"`
 	UniqueIDs []uniqueID `xml:"uniqueid"`
 	LockData  bool       `xml:"lockdata"`
 }
@@ -900,27 +927,48 @@ func encode(document any) []byte {
 	return append([]byte(xml.Header), append(encoded, '\n')...)
 }
 
-func movieNFO(metadata sourcecatalog.Metadata) []byte {
+// sourceTags name the sources an item comes from, as Jellyfin tags, which
+// its item page shows and its library filters offer. They label a source
+// where a version label cannot, as for an episode, which has one file.
+func sourceTags(names map[string]string, sources ...string) []string {
+	seen := map[string]bool{}
+	var tags []string
+	for _, source := range sources {
+		tag := "From " + names[source]
+		if !seen[tag] {
+			seen[tag] = true
+			tags = append(tags, tag)
+		}
+	}
+	sort.Strings(tags)
+	return tags
+}
+
+func movieNFO(metadata sourcecatalog.Metadata, tags []string) []byte {
 	unique, tmdb, imdb, tvdb := providers(metadata.ProviderIDs)
 	return encode(movieDocument{
 		Title: metadata.Name, OriginalTitle: metadata.OriginalTitle, Year: metadata.Year, Plot: metadata.Overview,
+		Tagline: metadata.Tagline, Rating: metadata.CommunityRating, CriticRating: metadata.CriticRating,
 		MPAA: metadata.OfficialRating, Premiered: date(metadata.PremiereDate), Runtime: minutes(metadata.RunTimeTicks),
-		Genres: metadata.Genres, UniqueIDs: unique, TMDB: tmdb, IMDB: imdb, TVDB: tvdb, LockData: true,
-	})
-}
-
-func showNFO(metadata sourcecatalog.Metadata) []byte {
-	unique, tmdb, imdb, tvdb := providers(metadata.ProviderIDs)
-	return encode(showDocument{
-		Title: metadata.Name, Year: metadata.Year, Plot: metadata.Overview, Genres: metadata.Genres,
+		Genres: metadata.Genres, Studios: metadata.Studios, Tags: tags,
 		UniqueIDs: unique, TMDB: tmdb, IMDB: imdb, TVDB: tvdb, LockData: true,
 	})
 }
 
-func episodeNFO(metadata sourcecatalog.Metadata, season int, episode int) []byte {
+func showNFO(metadata sourcecatalog.Metadata, tags []string) []byte {
+	unique, tmdb, imdb, tvdb := providers(metadata.ProviderIDs)
+	return encode(showDocument{
+		Title: metadata.Name, Year: metadata.Year, Plot: metadata.Overview, Rating: metadata.CommunityRating,
+		Genres: metadata.Genres, Studios: metadata.Studios, Tags: tags,
+		UniqueIDs: unique, TMDB: tmdb, IMDB: imdb, TVDB: tvdb, LockData: true,
+	})
+}
+
+func episodeNFO(metadata sourcecatalog.Metadata, season int, episode int, tags []string) []byte {
 	unique, _, _, _ := providers(metadata.ProviderIDs)
 	return encode(episodeDocument{
 		Title: metadata.Name, Season: season, Episode: episode, Aired: date(metadata.PremiereDate),
-		Plot: metadata.Overview, Runtime: minutes(metadata.RunTimeTicks), UniqueIDs: unique, LockData: true,
+		Plot: metadata.Overview, Runtime: minutes(metadata.RunTimeTicks), Rating: metadata.CommunityRating,
+		Tags: tags, UniqueIDs: unique, LockData: true,
 	})
 }

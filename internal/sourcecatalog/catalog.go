@@ -56,6 +56,10 @@ type Metadata struct {
 	Genres            []string          `json:"genres,omitempty"`
 	RunTimeTicks      int64             `json:"runtime_ticks,omitempty"`
 	ProviderIDs       map[string]string `json:"provider_ids,omitempty"`
+	Studios           []string          `json:"studios,omitempty"`
+	Tagline           string            `json:"tagline,omitempty"`
+	CommunityRating   float64           `json:"community_rating,omitempty"`
+	CriticRating      float64           `json:"critic_rating,omitempty"`
 	IndexNumber       *int              `json:"index_number,omitempty"`
 	ParentIndexNumber *int              `json:"parent_index_number,omitempty"`
 	SeriesID          string            `json:"series_id,omitempty"`
@@ -334,7 +338,8 @@ func normalize(item jellyfin.Item) (string, string, error) {
 	encoded, err := json.Marshal(Metadata{
 		Name: item.Name, OriginalTitle: item.OriginalTitle, Overview: item.Overview, OfficialRating: item.OfficialRating,
 		Year: item.ProductionYear, PremiereDate: item.PremiereDate, Genres: item.Genres, RunTimeTicks: item.RunTimeTicks,
-		ProviderIDs: item.ProviderIDs, IndexNumber: item.IndexNumber, ParentIndexNumber: item.ParentIndexNumber,
+		ProviderIDs: item.ProviderIDs, Studios: studios(item), Tagline: first(item.Taglines),
+		CommunityRating: item.CommunityRating, CriticRating: item.CriticRating, IndexNumber: item.IndexNumber, ParentIndexNumber: item.ParentIndexNumber,
 		SeriesID: item.SeriesID, SeasonID: item.SeasonID,
 		Subtitles: externalSubtitles(item), HasPrimaryImage: item.ImageTags["Primary"] != "",
 	})
@@ -343,6 +348,23 @@ func normalize(item jellyfin.Item) (string, string, error) {
 	}
 	sum := sha256.Sum256(encoded)
 	return string(encoded), hex.EncodeToString(sum[:]), nil
+}
+
+func studios(item jellyfin.Item) []string {
+	var names []string
+	for _, studio := range item.Studios {
+		if name := strings.TrimSpace(studio.Name); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func first(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
 }
 
 func cleanRoots(roots []string) ([]string, error) {

@@ -55,6 +55,12 @@ func main() {
 			if item.Type == "Episode" {
 				check("  episode names its series and season", item.SeriesID != "" && item.SeasonID != "", "")
 			}
+			if item.Type == "Movie" {
+				// run-throwaway.sh gives the film an NFO with these.
+				check("  movie carries studios, taglines, and ratings",
+					len(item.Studios) == 1 && item.Studios[0].Name == "Probe Pictures" && len(item.Taglines) == 1 && item.CommunityRating == 7.5 && item.CriticRating == 81,
+					fmt.Sprintf("%v %q %v %v", item.Studios, item.Taglines, item.CommunityRating, item.CriticRating))
+			}
 		}
 		if page.Total > 1 {
 			second, err := client.Items(ctx, library.ID, 1, 1)

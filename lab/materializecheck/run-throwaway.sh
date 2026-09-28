@@ -56,7 +56,7 @@ dir="$work/generated/Movies/Generated Probe (2003) [jmid-4f2a9c1e]"
 mkdir -p "$dir"
 cat > "$dir/movie.nfo" <<'NFO'
 <?xml version="1.0" encoding="utf-8" standalone="yes"?>
-<movie><title>Generated Probe</title><year>2003</year><uniqueid type="tmdb" default="true">999003</uniqueid><tmdbid>999003</tmdbid><lockdata>true</lockdata></movie>
+<movie><title>Generated Probe</title><year>2003</year><tagline>A generated probe</tagline><rating>6.5</rating><criticrating>72</criticrating><studio>Probe Pictures</studio><tag>From Cedar</tag><tag>From Walnut</tag><uniqueid type="tmdb" default="true">999003</uniqueid><tmdbid>999003</tmdbid><lockdata>true</lockdata></movie>
 NFO
 echo "http://127.0.0.1:9/r/aaaa" > "$dir/.jellymesh-tmp-1.strm"
 folder=$(basename "$dir")
@@ -64,7 +64,7 @@ echo "http://127.0.0.1:9/r/bbbb" > "$dir/$folder - Cedar.strm"
 echo "http://127.0.0.1:9/r/cccc" > "$dir/$folder - Walnut.strm"
 printf '1\n00:00:01,000 --> 00:00:03,000\nHi\n' > "$dir/$folder - Cedar.en.srt"
 count_items() {
-  curl -sf "$url/Items?Recursive=true&ParentId=$generated_id&IncludeItemTypes=Movie&Fields=MediaSources,MediaStreams,Path,ProviderIds" -H "$admin"
+  curl -sf "$url/Items?Recursive=true&ParentId=$generated_id&IncludeItemTypes=Movie&Fields=MediaSources,MediaStreams,Path,ProviderIds,Tags,Studios,Taglines" -H "$admin"
 }
 wait_for_item() {
   local seconds=$1 start=$(date +%s)
@@ -88,6 +88,7 @@ d=json.load(open(sys.argv[1]))
 print("items:", d["TotalRecordCount"])
 for it in d["Items"]:
     print("  name=%r year=%s providers=%s" % (it["Name"], it.get("ProductionYear"), it.get("ProviderIds")))
+    print("  tags=%s studios=%s taglines=%s rating=%s critic=%s" % (it.get("Tags"), [s["Name"] for s in it.get("Studios", [])], it.get("Taglines"), it.get("CommunityRating"), it.get("CriticRating")))
     for ms in it.get("MediaSources", []):
         print("  version name=%r protocol=%s" % (ms.get("Name"), ms.get("Protocol")))
         for st in ms.get("MediaStreams", []):

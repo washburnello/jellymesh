@@ -274,16 +274,27 @@ func TestRemovalRevokesAndStaysInsideTheRoot(t *testing.T) {
 	f.reconcile(t, both, everything)
 	records, _ := f.records.All(ctx)
 	var cedarReference string
+	var walnut store.Materialized
 	for _, record := range records {
 		if record.SourceNodeID == "cedar" {
 			cedarReference = record.Reference
+		} else {
+			walnut = record
 		}
 	}
+	walnutStrm := f.read(t, walnut.Path)
 
-	// cedar's library is opted out: its version goes, walnut's stays.
+	// cedar's library is opted out: its version goes, walnut's stays, and
+	// only the NFO's source tags change.
 	result := f.reconcile(t, both, func(source string, _ string) bool { return source != "cedar" })
-	if result.Removed != 1 || result.Written != 0 {
-		t.Fatalf("removing one version must not disturb the other: %+v", result)
+	if result.Removed != 1 {
+		t.Fatalf("one version should be removed: %+v", result)
+	}
+	if after, found, _ := f.records.ByReference(ctx, walnut.Reference); !found || after.Path != walnut.Path || f.read(t, walnut.Path) != walnutStrm {
+		t.Fatal("removing one version must not disturb the other")
+	}
+	if nfo := f.read(t, filepath.Join(filepath.Dir(walnut.Path), "movie.nfo")); strings.Contains(nfo, "From Cedar") || !strings.Contains(nfo, "<tag>From Walnut</tag>") {
+		t.Fatalf("the NFO should name only the remaining source:\n%s", nfo)
 	}
 	if _, found, _ := f.records.ByReference(ctx, cedarReference); found {
 		t.Fatal("the removed version's reference must be revoked")
@@ -737,5 +748,47 @@ func TestAFilmAndAShowWithOneNumberStayApart(t *testing.T) {
 	}
 	if len(f.folderOf(t, ShowsFolder)) != 1 || len(f.folderOf(t, MoviesFolder)) != 1 {
 		t.Fatal("one film folder and one show folder expected")
+	}
+}
+
+// C-MA-7: generated NFOs name the sources an item comes from as tags, a film
+// every source it has a version from, a show the sources its episodes play
+// from, and an episode the one it plays from; they carry the source's
+// studios, tagline, and ratings.
+func TestNFOsNameTheirSourcesAndCarrySourceMetadata(t *testing.T) {
+	f := newFixture(t)
+	rich := film
+	rich.Studios, rich.Tagline, rich.CommunityRating, rich.CriticRating = []string{"Probe Pictures"}, "Free your mind", 8.7, 83
+	f.reconcile(t, append(showItems(t,
+		show{"cedar", "s", map[string]string{"Tvdb": "81189"}, [][2]int{{1, 1}}},
+		show{"walnut", "s", map[string]string{"Tvdb": "81189"}, [][2]int{{1, 1}, {1, 2}}}),
+		item(t, "cedar", "c-1", "lib", "Movie", rich), item(t, "walnut", "w-1", "lib", "Movie", rich)), everything)
+	var movie, tvshow, first, second string
+	for _, file := range f.files(t) {
+		switch {
+		case strings.HasSuffix(file, "movie.nfo"):
+			movie = f.read(t, file)
+		case strings.HasSuffix(file, "tvshow.nfo"):
+			tvshow = f.read(t, file)
+		case strings.HasSuffix(file, "S01E01.nfo"):
+			first = f.read(t, file)
+		case strings.HasSuffix(file, "S01E02.nfo"):
+			second = f.read(t, file)
+		}
+	}
+	for _, want := range []string{"<tag>From Cedar</tag>", "<tag>From Walnut</tag>", "<studio>Probe Pictures</studio>",
+		"<tagline>Free your mind</tagline>", "<rating>8.7</rating>", "<criticrating>83</criticrating>"} {
+		if !strings.Contains(movie, want) {
+			t.Errorf("movie.nfo lacks %s:\n%s", want, movie)
+		}
+	}
+	if !strings.Contains(tvshow, "<tag>From Cedar</tag>") || !strings.Contains(tvshow, "<tag>From Walnut</tag>") {
+		t.Errorf("tvshow.nfo should name both sources:\n%s", tvshow)
+	}
+	if !strings.Contains(first, "<tag>From Cedar</tag>") || strings.Contains(first, "Walnut") {
+		t.Errorf("an episode should name the one source it plays from:\n%s", first)
+	}
+	if !strings.Contains(second, "<tag>From Walnut</tag>") {
+		t.Errorf("an episode should name the one source it plays from:\n%s", second)
 	}
 }

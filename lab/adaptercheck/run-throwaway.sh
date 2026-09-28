@@ -26,6 +26,10 @@ trap cleanup EXIT
 mkdir -p "$work/config" "$work/media/movies/Probe Film (2001)" "$work/media/tv/Probe Show/Season 01"
 head -c 2000000 "$source_file" > "$work/media/movies/Probe Film (2001)/Probe Film (2001).mkv"
 head -c 2000000 "$source_file" > "$work/media/tv/Probe Show/Season 01/Probe Show S01E01.mkv"
+cat > "$work/media/movies/Probe Film (2001)/movie.nfo" <<'NFO'
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<movie><title>Probe Film</title><year>2001</year><studio>Probe Pictures</studio><tagline>A probe</tagline><rating>7.5</rating><criticrating>81</criticrating></movie>
+NFO
 
 admin_password=$(openssl rand -hex 16)
 service_password=$(openssl rand -hex 16)

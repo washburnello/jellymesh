@@ -60,6 +60,10 @@ type Item struct {
 	Genres            []string          `json:"Genres,omitempty"`
 	RunTimeTicks      int64             `json:"RunTimeTicks,omitempty"`
 	ProviderIDs       map[string]string `json:"ProviderIds,omitempty"`
+	Studios           []NamedItem       `json:"Studios,omitempty"`
+	Taglines          []string          `json:"Taglines,omitempty"`
+	CommunityRating   float64           `json:"CommunityRating,omitempty"`
+	CriticRating      float64           `json:"CriticRating,omitempty"`
 	// Path and ETag stay on the source. The path reveals filesystem layout
 	// and is used only to check the item against the declared roots.
 	Path string `json:"Path,omitempty"`
@@ -67,6 +71,11 @@ type Item struct {
 
 	ImageTags    map[string]string `json:"ImageTags,omitempty"`
 	MediaSources []MediaSource     `json:"MediaSources,omitempty"`
+}
+
+// NamedItem is a reference Jellyfin gives by name and ID, such as a studio.
+type NamedItem struct {
+	Name string `json:"Name"`
 }
 
 // MediaSource is one playable source of an item.
@@ -256,7 +265,7 @@ func (client *Client) Items(ctx context.Context, libraryID string, startIndex in
 		"ParentId":         {libraryID},
 		"Recursive":        {"true"},
 		"IncludeItemTypes": {strings.Join(ItemTypes, ",")},
-		"Fields":           {"ProviderIds,Path,Etag,Overview,Genres,OriginalTitle,PremiereDate,OfficialRating,MediaSources,MediaStreams"},
+		"Fields":           {"ProviderIds,Path,Etag,Overview,Genres,OriginalTitle,PremiereDate,OfficialRating,Studios,Taglines,MediaSources,MediaStreams"},
 		"SortBy":           {"SortName"},
 		"StartIndex":       {strconv.Itoa(startIndex)},
 		"Limit":            {strconv.Itoa(limit)},

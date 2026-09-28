@@ -388,3 +388,25 @@ func TestAuthorizationUsesLiveLibraryMembership(t *testing.T) {
 		t.Fatalf("moved and deleted items should be withdrawn: %+v", withdrawn)
 	}
 }
+
+// C-MA-7: a change carries the source's studios, first tagline, and ratings.
+func TestChangesCarrySourceMetadata(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	w.fake.AddItem("lib-movies", jellyfin.Item{
+		ID: "movie-rich", Name: "Rich", Type: "Movie", Path: "/media/movies/Rich/rich.mkv",
+		Studios: []jellyfin.NamedItem{{Name: "Probe Pictures"}, {Name: " "}}, Taglines: []string{"Free your mind", "Second"},
+		CommunityRating: 8.7, CriticRating: 83,
+	})
+	if err := w.catalog.Publish(ctx, "lib-movies", []string{"/media/movies"}); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	change, ok := ids(w.changes(t, 0))["movie-rich"]
+	if !ok || change.Metadata == nil {
+		t.Fatal("the item was not published")
+	}
+	got := change.Metadata
+	if len(got.Studios) != 1 || got.Studios[0] != "Probe Pictures" || got.Tagline != "Free your mind" || got.CommunityRating != 8.7 || got.CriticRating != 83 {
+		t.Fatalf("source metadata not carried: %+v", got)
+	}
+}

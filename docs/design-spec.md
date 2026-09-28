@@ -744,7 +744,7 @@ Music playlists are also destination-local. A local user may create a playlist c
 
 The implementation must not assume that filename and NFO behavior alone guarantees grouping on every Jellyfin client. Version grouping, collection behavior, music behavior, and source labels are Phase 0 exit criteria.
 
-The server name is represented first in the native version label. Standard metadata fields can be used as fallbacks after client testing. A circular avatar is optional and must not compromise the stock-client guarantee.
+The server name is represented first in the native version label. Standard metadata fields can be used as fallbacks after client testing. As built, a `From <source>` tag is that fallback, and the only label an episode has (section 9, C-MA-7). A circular avatar is optional and must not compromise the stock-client guarantee.
 
 Deduplication is identity-first. Jellymesh may merge source media into one logical work only when strong identity matches, such as the same media type plus TMDB, TVDB, IMDb, or MusicBrainz identifier. Title/year matches are insufficient and remain separate. Jellymesh must not automatically prefer one source’s version of a film; native Jellyfin version selection remains the user-facing control. Episodes are the exception: Jellyfin shows no episode versions, so each episode plays from one chosen source (conformance A-13).
 
@@ -883,6 +883,12 @@ operator adds each root to the matching existing Jellyfin library once:
   it while it remains; otherwise the first source by node ID is chosen. The
   file name carries no source, so a change of source keeps the path. An
   episode without numbers is never grouped.
+- **Source labels and metadata.** Every NFO names the item's sources as
+  `From <source>` tags, which Jellyfin shows on the item page and offers as a
+  library filter: a film every source it has a version from, a show the
+  sources its episodes play from, and an episode the one it plays from, since
+  an episode has no version label. The NFO also carries the source's
+  studios, first tagline, and community and critic ratings (C-MA-7, M-8).
 - **Pins.** A work keeps the folder it was first materialized under, and a
   show keeps the identifiers its NFO was first written with, while it is
   materialized and for 90 days after, because Jellyfin keys a user's state on
