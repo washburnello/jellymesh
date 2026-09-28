@@ -294,6 +294,22 @@ var migrations = []string{
 	-- that it can be restored if the item returns within the grace period.
 	ALTER TABLE retention ADD COLUMN metadata TEXT NOT NULL DEFAULT '';
 	`,
+
+	// 11: what the destination has materialized. Each playable item has a
+	// random reference, which is what its .strm names and what the local relay
+	// resolves. Deleting the row revokes the reference.
+	`
+	CREATE TABLE materialized (
+		source_node_id  TEXT NOT NULL,
+		item_id         TEXT NOT NULL,
+		library_id      TEXT NOT NULL,
+		reference       TEXT NOT NULL UNIQUE,
+		path            TEXT NOT NULL,
+		checksum        TEXT NOT NULL,
+		created_at      TEXT NOT NULL,
+		PRIMARY KEY (source_node_id, item_id)
+	);
+	`,
 }
 
 func (database *DB) migrate(ctx context.Context) error {
