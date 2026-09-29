@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -691,5 +692,48 @@ func TestARemoteItemPlaysThroughTheWholeChain(t *testing.T) {
 	walnut.catalogSync()
 	if path, _ := materializedStrm(t, root, " - cedar"); path != "" {
 		t.Fatal("a blocked source's items must be withdrawn from the generated root")
+	}
+}
+
+// C-NT-1: a node advertising an address where it cannot be reached is not
+// admitted; the approval is refused, names the problem, and changes nothing.
+func TestAnUnreachableJoinerIsNotApproved(t *testing.T) {
+	closed, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unreachable := closed.Addr().String()
+	closed.Close()
+
+	cedar := startDaemon(t, "cedar", t.TempDir(), "127.0.0.1:0")
+	walnut := startDaemonWith(t, "walnut", t.TempDir(), "127.0.0.1:0", func(cfg *config.Config) { cfg.PublicHostname = unreachable })
+	cedar.must(http.MethodPost, "/admin/v1/group", FoundRequest{GroupID: "group-1"}, nil)
+
+	var invitation InviteResponse
+	cedar.must(http.MethodPost, "/admin/v1/invitations", InviteRequest{ValidForSeconds: 3600}, &invitation)
+	var pending PendingJoin
+	walnut.must(http.MethodPost, "/admin/v1/join/redeem", RedeemAdminRequest{
+		ShortCode: invitation.ShortCode, Address: invitation.Address,
+		Libraries: []policy.Library{{ID: "walnut-movies", Name: "Movies", CollectionType: "movies"}},
+	}, &pending)
+	walnut.must(http.MethodPost, "/admin/v1/join/complete", pending, &PendingJoin{})
+
+	var requests []enrollment.Request
+	cedar.must(http.MethodGet, "/admin/v1/requests", nil, &requests)
+	if len(requests) != 1 || requests[0].PublicHostname != unreachable {
+		t.Fatalf("requests: %+v", requests)
+	}
+	before := cedar.status().Group.Sequence
+	status := cedar.call(http.MethodPost, "/admin/v1/requests/approve", DecisionRequest{
+		InviterID: requests[0].InviterID, InvitationID: requests[0].InvitationID,
+	}, nil)
+	if status == http.StatusOK {
+		t.Fatal("an unreachable joiner was approved")
+	}
+	if after := cedar.status(); after.Group.Sequence != before || len(after.Group.Members) != 1 {
+		t.Fatalf("a refused approval changed the group: sequence %d to %d, %d members", before, after.Group.Sequence, len(after.Group.Members))
+	}
+	if _, err := cedar.node.Approve(context.Background(), requests[0].InviterID, requests[0].InvitationID); !errors.Is(err, enrollment.ErrUnreachable) {
+		t.Fatalf("the refusal should say the joiner is unreachable, got %v", err)
 	}
 }

@@ -443,6 +443,12 @@ func (n *Node) Approve(ctx context.Context, inviterID string, invitationID strin
 	if err != nil {
 		return Outcome{}, err
 	}
+	// Members connect to a node at the address it advertises, so a node
+	// that cannot be reached there is refused now rather than failing later
+	// (A-16, C-NT-1).
+	if err := enrollment.CheckAdvertisedAddress(ctx, n.identity, request.PublicHostname, request.Fingerprint); err != nil {
+		return Outcome{}, err
+	}
 	return n.Propose(ctx, grouplog.KindAdmission, body)
 }
 
