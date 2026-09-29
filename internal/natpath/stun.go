@@ -157,6 +157,21 @@ func decodeAddress(value []byte, xored bool, id transactionID) (netip.AddrPort, 
 // the socket (such as a QUIC transport) starts reading, or be handed that
 // user's non-QUIC packets instead.
 func Discover(ctx context.Context, conn net.PacketConn, servers []string) (Result, error) {
+	send := func(b []byte, to net.Addr) error { _, err := conn.WriteTo(b, to); return err }
+	receive := func(ctx context.Context, b []byte) (int, net.Addr, error) {
+		deadline, _ := ctx.Deadline()
+		if err := conn.SetReadDeadline(deadline); err != nil {
+			return 0, nil, err
+		}
+		return conn.ReadFrom(b)
+	}
+	defer conn.SetReadDeadline(time.Time{})
+	return discover(ctx, send, receive, servers)
+}
+
+// discover is Discover over any way of sending datagrams from, and
+// receiving non-QUIC datagrams on, one socket.
+func discover(ctx context.Context, send func([]byte, net.Addr) error, receive func(context.Context, []byte) (int, net.Addr, error), servers []string) (Result, error) {
 	if len(servers) == 0 {
 		return Result{}, ErrNoServers
 	}
@@ -185,20 +200,15 @@ func Discover(ctx context.Context, conn net.PacketConn, servers []string) (Resul
 			return Result{}, err
 		}
 		address := netip.AddrPortFrom(resolved[0].Unmap(), port)
-		if _, err := conn.WriteTo(request(id), net.UDPAddrFromAddrPort(address)); err != nil {
+		if err := send(request(id), net.UDPAddrFromAddrPort(address)); err != nil {
 			continue
 		}
 		queries = append(queries, query{server, address, id})
 	}
 	result := Result{Mapped: map[string]netip.AddrPort{}}
-	deadline, _ := ctx.Deadline()
-	if err := conn.SetReadDeadline(deadline); err != nil {
-		return Result{}, err
-	}
-	defer conn.SetReadDeadline(time.Time{})
 	buffer := make([]byte, maxResponseLength)
 	for len(result.Mapped) < len(queries) {
-		n, from, err := conn.ReadFrom(buffer)
+		n, from, err := receive(ctx, buffer)
 		if err != nil {
 			break // the deadline, or the socket closed
 		}
