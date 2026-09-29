@@ -16,7 +16,7 @@ set -uo pipefail
 cedar=${CEDAR_HOST:-cedar}
 docker rm -f jm-lan-walnut jm-lan-jellyfin >/dev/null 2>&1
 docker rm -f jm-lan-walnut-old >/dev/null 2>&1
-docker volume rm jm-lan-walnut-data jm-lan-walnut-restored jm-lan-walnut-rebuilt >/dev/null 2>&1
+docker volume ls -q --filter name=jm-lan-walnut | xargs -r docker volume rm >/dev/null 2>&1
 docker network rm jm-lan >/dev/null 2>&1
 rm -rf "$HOME/.config/jellymesh-lantest"
 ssh "$cedar" 'bash -s' <<'REMOTE'

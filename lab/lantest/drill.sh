@@ -102,8 +102,12 @@ backup_drill() {
   docker volume rm jm-lan-walnut-restored >/dev/null
 }
 
+current_volume() { docker inspect jm-lan-walnut --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Name}}{{end}}{{end}}'; }
+
 recover_drill() {
-  local old_id old_fp
+  local old_id old_fp compromised rebuilt
+  compromised=$(current_volume)
+  rebuilt="jm-lan-walnut-$(date +%s)"
   old_id=$(walnut_jm status | json 'print(json.load(sys.stdin)["node_id"])')
   old_fp=$(walnut_jm status | json 'print(json.load(sys.stdin)["fingerprint"])')
   report "compromised node" "${old_id:0:12} (${old_fp:0:16})"
@@ -114,9 +118,8 @@ recover_drill() {
   report "1. cedar can no longer play from the ejected key" "$([ "$(bytes_check)" = exact ] && echo "NO, it still plays" || echo yes)"
   # 3. Rebuild with a new identity; the old volume is kept for investigation.
   docker rm -f jm-lan-walnut >/dev/null
-  docker volume rm jm-lan-walnut-rebuilt >/dev/null 2>&1 || true
-  docker volume create jm-lan-walnut-rebuilt >/dev/null
-  start_walnut jm-lan-walnut-rebuilt
+  docker volume create "$rebuilt" >/dev/null
+  start_walnut "$rebuilt"
   local new_fp; new_fp=$(walnut_jm status | json 'print(json.load(sys.stdin)["fingerprint"])')
   report "3. rebuilt with a new key" "${new_fp:0:16} (different: $([ "$new_fp" != "$old_fp" ] && echo yes || echo NO))"
   local library; library=$(walnut_jm libraries | json 'print([l.get("id") or l.get("Id") for l in json.load(sys.stdin) if (l.get("name") or l.get("Name"))=="Movies"][0])')
@@ -135,8 +138,10 @@ recover_drill() {
   wait "$join" && report "4. rebuilt walnut rejoined" "yes"
   walnut_jm catalog-sync >/dev/null
   cedar_jm catalog-sync >/dev/null
-  # cedar's Jellyfin holds each .strm's old reference until it next scans
-  # (A-12); scan now, as its schedule would.
+  # The films returned to the paths they held, so their .strm files keep
+  # their references (C-MA-8) and play before cedar's Jellyfin rescans.
+  report "4. before cedar rescans, it streams the rebuilt walnut's bytes" "$(bytes_check)"
+  # And after a scan, as its schedule would run one.
   ssh "$cedar" 'python3 - <<"PY"
 import json,os,time,urllib.request
 cfg=json.load(open(os.path.expanduser("~/.config/tfetch/config.json")))["jellyfin"]
@@ -148,13 +153,13 @@ PY'
   report "4. after cedar's scan, it streams the rebuilt walnut's bytes" "$(bytes_check)"
   # The stolen key, brought back, gets nowhere.
   docker rm -f jm-lan-walnut-old >/dev/null 2>&1 || true
-  docker run -d --name jm-lan-walnut-old --network jm-lan -v jm-lan-walnut-data:/data \
+  docker run -d --name jm-lan-walnut-old --network jm-lan -v "$compromised:/data" \
     -e JELLYMESH_NODE_NAME=walnut -e JELLYMESH_PUBLIC_HOSTNAME="$walnut_ip:18444" jellymesh:lan >/dev/null
   sleep 5
   local old_sync; old_sync=$(docker exec jm-lan-walnut-old /jellymesh sync 2>&1 | tr -d ' \n')
   report "the old key's sync with the group (refused: Reached 0)" "$old_sync"
   docker rm -f jm-lan-walnut-old >/dev/null
-  report "5. clean up: old volume kept for investigation" "jm-lan-walnut-data"
+  report "5. clean up: compromised volume kept for investigation" "$compromised (walnut now runs on $rebuilt)"
 }
 
 case "${1:-}" in
