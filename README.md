@@ -68,6 +68,7 @@ In a container deployment, prefix each command with `docker compose exec jellyme
 ## Documentation
 
 - [Conformance criteria](docs/conformance.md) — the objective target, run with `./scripts/verify.sh`
+- [Making a node reachable](docs/operator-reachability.md) — port forwards, Tailscale Funnel, direct paths, and troubleshooting
 - [Runbook: compromised node key](docs/runbook-compromise-recovery.md)
 - [Design specification](docs/design-spec.md)
 - [Phase 0 validation plan](docs/phase-0-lab.md)
