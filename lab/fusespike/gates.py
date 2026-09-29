@@ -494,7 +494,15 @@ def g7(until="07:30", log_path=None):
                 added += 1
                 add_films(3, f"s{added:03d}")
                 docker("restart", "-t", "1", "fusespike-reader")
+                # Wait for the mount to have restarted, not merely for its
+                # folder to exist: the old mount is still up for a moment,
+                # and scanning it misses the new films (soak cycle 41).
+                restarts = docker("inspect", "fusespike-mount", "--format", "{{.RestartCount}}").stdout.strip()
                 docker("exec", "fusespike-mount", "kill", "-USR1", "1")
+                for _ in range(60):
+                    if docker("inspect", "fusespike-mount", "--format", "{{.RestartCount}}").stdout.strip() != restarts:
+                        break
+                    time.sleep(0.5)
                 wait_mount(); time.sleep(3)
                 jf.scan()
                 for library in LIBS:
