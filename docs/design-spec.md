@@ -548,6 +548,60 @@ by a key outside every roster. Every other route needs a member's key before
 its own per-group check runs, so a route added later is private unless it is
 deliberately made public.
 
+### Reachability and direct media paths (Phase 5)
+
+Status: decided with the user on 2026-09-29 (conformance.md assumption A-16);
+not yet built. The tasks are the GitHub issues under "Direct peer connections".
+
+Members' homes sit behind NAT, sometimes two layers of it (cedar's own path is
+Calix gateway, then Google Wifi, then the host, with no access to the outer
+router). The decision separates arranging a connection from carrying media.
+
+**Every node advertises a reachable address.** It is part of membership: the
+`PublicHostname` in each admission. It is reached over TCP with mutual TLS and
+pinned keys, as today, and there are two accepted ways to provide it:
+
+- a router port forward, where the operator controls every NAT layer; or
+- Tailscale Funnel in raw-TCP mode (`tailscale funnel --tcp`), which passes
+  Jellymesh's TLS through unopened. Funnel's HTTPS mode terminates TLS at
+  Tailscale and would break key pinning, so it is not acceptable.
+
+An approver's node dials a joiner's advertised address and checks that the
+joiner's key answers there before the admission is signed, so an unreachable
+node is caught at the door.
+
+**The advertised address arranges connections; media prefers a direct UDP
+path.** Funnel carries every byte through Tailscale's servers, under
+bandwidth limits it does not publish, so it suits control traffic but not
+film-sized streams. When one node needs media from another:
+
+1. Each learns its outside UDP address (IP and port) from public STUN servers,
+   using the same UDP socket its QUIC transport will use.
+2. They exchange those addresses, and their LAN addresses for peers on the
+   same network, over the TCP connection to the source's advertised address.
+   The offers are bound to that mutually authenticated connection and expire
+   within seconds.
+3. Both send UDP packets to the other's addresses at once. Each router sees
+   outgoing traffic and admits the peer's replies: the hole punch.
+4. A QUIC connection opens over that path, with the same node certificates
+   and pinned fingerprints as the TCP transport, and media requests run over
+   HTTP/3 on it. The source still authorizes every request; ranges, HEAD,
+   cancellation, the per-destination ceiling, and the head cache behave as
+   they do over TCP. Keep-alives hold the NAT mappings open.
+5. If punching fails, as it can when both routers allocate a new outside
+   port per destination, media falls back to the advertised TCP address.
+
+The direction a connection is opened in does not decide the direction media
+flows, so a node with a port forward is reachable by UDP without punching,
+and a Funnel-only node still serves media directly whenever punching works.
+The advertised addresses are known to every member through the roster, so
+there is no central matchmaker: each pair arranges its own path.
+
+Not in the first cut: relaying signalling through a third member when
+neither node is reachable (the requirement above rules that case out),
+relaying media through a third member when punching fails at both ends, and
+opening router ports automatically by UPnP or NAT-PMP.
+
 ## 9. Catalog synchronization
 
 The source node maintains a versioned group catalog and can produce a destination-scoped manifest containing only published libraries that the destination has not opted out of. The source never sends an opted-out library’s metadata to that destination.

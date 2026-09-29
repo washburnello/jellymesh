@@ -163,6 +163,12 @@ rather than implied.
 | C-MA-6 | A series with a shared strong identity from several sources is one show holding every source's episodes; each episode, addressed by series work, season, and episode number, has one file from one source, which keeps its place until it goes; unnumbered episodes are never grouped | `TestASeriesFromTwoSourcesIsOneShow`, `TestAnEpisodeKeepsItsSourceUntilItGoes`, `TestUnnumberedEpisodesKeepAFileEach`, `TestSeriesWithoutASharedIdentityStayApart` | PASS — one file per episode because Jellyfin shows no episode versions (M-10, A-13) |
 | C-PB-4 | A stream above a destination's bandwidth ceiling is served as a source-side transcode rather than throttled | none yet | PENDING — the second half of assumption A-1 |
 | C-PB-5 | Jellyfin's repeated probe of a remote item on every PlaybackInfo does not repeatedly cross the source's uplink: the relay answers from a per-revision head cache, confirms each hit with a bodiless HEAD so the source still authorizes every request, and stitches exactly past the head | `TestRepeatedProbesAreServedFromTheHead`, `TestRangesInsideTheHeadAndHeadRequestsStayLocal`, `TestARangePastTheHeadIsStitchedExactly`, `TestTheHeadIsTiedToOneRevisionOfOneFile`, `TestACachedHeadIsNotServedOnceTheSourceRefuses`, `TestTheCacheIsBoundedAndRemovable` | PASS |
+| C-NT-1 | Joining is approved only once the approver's node has reached the joiner's advertised address and found the joiner's key there | none yet | PENDING — A-16 |
+| C-NT-2 | A node learns its outside UDP address from STUN on the socket its QUIC transport uses, and tells a mapping that varies by destination from one that does not | none yet | PENDING — A-16 |
+| C-NT-3 | Direct-path offers are exchanged only over the mutually authenticated connection to a member, name only that pair, and expire; an offer from a non-member, for another pair, or replayed late is refused | none yet | PENDING — A-16 |
+| C-NT-4 | Two nodes behind endpoint-independent NATs establish a QUIC connection by hole punching, authenticated by the same pinned node keys, and a mismatched key is refused | none yet | PENDING — A-16 |
+| C-NT-5 | Media over the direct path keeps every relay guarantee: ranges, HEAD, cancellation, the per-destination ceiling, the head cache, and the source's authorization of each request | none yet | PENDING — A-16 |
+| C-NT-6 | When punching fails, media falls back to the advertised address without the viewer seeing an error, and the node reports which path each peer uses | none yet | PENDING — A-16 |
 | C-OP-1 | Audit events are recorded with secrets redacted: detail outside an allow-list of identifiers and outcomes is replaced, registered secret material is scrubbed from every field, and enrollment, group log changes including equivocation, and block decisions are audited without the invitation secret appearing in any encoding | `TestSecretsNeverReachTheSink`, `TestEnrollmentIsAuditedWithoutSecrets`, `TestGroupChangesAreAudited`, `TestBlockDecisionsAreAudited`, `TestAuditRepositoryRoundTrip` | PASS |
 | C-OP-2 | Compromise recovery is by re-enrollment: a fresh key is a distinct peer, and readmission requires a new invitation and fresh approval | none yet | DECIDED — see design-spec.md section 8. The mechanism it relies on is covered by C-ID-3, C-TR-4, C-TR-7 and C-PO-5; C-OP-3 is in place and the runbook is C-OP-4 |
 | C-OP-3 | Ejecting a member also revokes its transport trust on every node that applies the ejection, so a compromised key cannot complete a handshake; an ejection by a non-administrator changes nothing | `TestEjectionRevokesTrustOnEveryNode`, `TestReceiversReapplyTheRoleRules` | PASS |
@@ -351,6 +357,23 @@ not relied on either.
 Cost: a film held locally and remotely shows twice, and watching one does
 not mark the other.
 
+**A-16. Reachable addresses, direct media paths (C-NT-1 to C-NT-6).**
+Assumed, decided with the user 2026-09-29: every node must advertise an
+address other members can reach over TCP, by a router port forward or by
+Tailscale Funnel in raw-TCP mode. Joining checks it. The advertised address
+carries control traffic and arranges connections. Media prefers a direct QUIC
+path over a hole-punched UDP route, arranged through that address, and falls
+back to the address when punching fails. Design in design-spec.md section 8,
+"Reachability and direct media paths".
+Rationale: operators run servers at home, so asking for a port forward or a
+free Tailscale account is a fair bar. Funnel alone would route every film
+through Tailscale's servers under unpublished bandwidth limits; punching
+keeps media home to home. Every member already knows every other member's
+address from the roster, so no central matchmaker is needed.
+Cost: a new UDP transport (QUIC) and a dependency on public STUN servers. A
+pair whose routers both allocate a new port per destination streams through
+the advertised address, and for a Funnel node that means Tailscale's limits.
+
 **A-5. Group state replication (C-PO-14 to C-PO-20, C-TR-9).**
 Assumed: group state (owner, epoch, administrators, the roster bound to
 fingerprints, ejections, group defaults) is derived by replaying an
@@ -378,8 +401,9 @@ Not provable by unit test. These are the Phase 5 gates.
 |---|---|---|---|
 | M-1 | Stock Jellyfin Web, Android, Android TV, iOS/Swiftfin, and Roku TV can browse, play, seek, switch subtitle and audio tracks, resume, and report progress on a remote source | Real devices; Web needs only a browser | **The largest untested assumption in the project.** Phase 0 proved the server relays bytes and ranges correctly, but that was measured with `curl`; no Jellyfin client has yet played a federated item. The Web half is testable today against hand-authored `.strm` files, without any Jellymesh code |
 | M-1a | A remote item plays, seeks, and resumes in Jellyfin Web | A browser session | Partial de-risk of M-1, available now |
-| M-2 | Public HTTPS works from an external network without Tailscale | A domain, DNS, a port forward, a certificate | |
-| M-2a | The node has a reachable public address at all | One minute of checking | Precondition for M-2. If the router's WAN address is inside `100.64.0.0/10` the ISP is using carrier-grade NAT, port forwarding cannot work, and the no-Tailscale goal fails for that node. Worth establishing before Phase 5 rather than during it |
+| M-2 | A node is reachable from an external network at its advertised address, by a router port forward or by Tailscale Funnel in raw-TCP mode, with pinned keys intact end to end | A second network; Funnel or a port forward | Reworded 2026-09-29 by A-16: "without Tailscale" is no longer the requirement. cedar sits behind double NAT (Highline's Calix gateway, then Google Wifi) with no access to the Calix, so it will use Funnel |
+| M-2a | The node has a reachable public address at all | One minute of checking | Checked 2026-09-28 for cedar: public IPv4 198.98.94.5, but the Google Wifi's WAN is 10.160.0.75 behind a Calix gateway at 10.160.0.1 (double NAT, not carrier-grade NAT). No global IPv6. `tailscale netcheck` shows endpoint-independent mapping (`MappingVariesByDestIP: false`), which hole punching needs |
+| M-12 | Two homes on different networks stream a film over a hole-punched UDP path, arranged through one node's Funnel address, and fall back to the advertised address when punching is prevented | A second network | Pending the direct-path work (A-16) |
 | M-3 | Backup, restore, and rollback drills succeed, including compromise recovery by re-enrollment | Nothing external; C-ST-7, C-ST-10 and C-ST-11 are in place, and a drill against the lab is what remains | Not hardware-blocked. Previously worded as a key-rotation drill, which no longer exists after the decision in design-spec.md section 8 |
 | M-4 | A multi-home pilot survives reboots, outages, certificate renewal, and library changes | A second household willing to run alpha software, over weeks | The genuine long pole. Cannot be simulated: the failures it finds only appear over time |
 | M-5 | A first join to a group of realistic size completes in an acceptable time | A real catalog size | Half-measured: the rate is 4.72 items/second (phase-0-results.md section 4); only the item count is missing |
