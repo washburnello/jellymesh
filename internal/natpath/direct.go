@@ -92,6 +92,13 @@ func Listen(address string, cert tls.Certificate) (*Endpoint, error) {
 		conn.Close()
 		return nil, err
 	}
+	// quic-go keeps non-QUIC datagrams only once ReadNonQUICPacket has been
+	// called, and drops them before that. Call it once now, with a context
+	// that is already done, so that STUN answers arriving before the reader
+	// goroutine runs are queued rather than lost.
+	started, cancel := context.WithCancel(context.Background())
+	cancel()
+	endpoint.transport.ReadNonQUICPacket(started, nil)
 	go endpoint.accept()
 	go endpoint.readNonQUIC()
 	return endpoint, nil
