@@ -563,6 +563,17 @@
       "state": "open",
       "body": "Decide whether remote films can be presented to Jellyfin as ordinary files through a FUSE mount, so every app plays them (the Roku app fetches a `.strm` URL itself and fails: jellyfin-roku LoadVideoContentTask.bs `isHTTPStream()`), without giving up stability. Stability outranks compatibility: FUSE is adopted only if it passes every gate. Otherwise `.strm` stays, improved with LAN-reachable links and an upstream Roku fix.\n\n**Shape under test**\n- Listings, sizes and NFOs come from local state; only media bytes touch the network.\n- Every read has a hard deadline and returns an error, never a hang.\n- The mount is a tiny separate process that survives daemon crashes, restarts and updates.\n- The mount is the library root, so an unavailable mount reads as an inaccessible root and Jellyfin keeps its items.\n- Media bytes are served to Jellyfin's user only.\n- Remote films go in separate libraries with trickplay and chapter extraction off.\n- The mode is chosen per node by a self-test at setup and after updates (FUSE if the host passes, else `.strm`), never switched per incident.\n\n**Gates (all must pass on walnut's test Jellyfin; cedar untouched)**\n- G1, never hangs: source unplugged, slowed to a crawl, and Jellymesh killed, during a scan and during playback. Jellyfin's API stays responsive, every read returns within the deadline, and no process gets stuck in an unkillable wait.\n- G2, library never shrinks: random kills of the mount and daemon, a reboot with Jellyfin starting first, and a scan while the mount is down. Zero items removed or duplicated, and history intact.\n- G3, no surprise transfers: scan, refresh, every scheduled task, IntroSkipper, and a non-Jellyfin reader. Only probe bytes cross the network (about 1-3 MB per film, measured 2026-09-29 on a 1.47 GB MKV), and non-Jellyfin reads get nothing. Also answer whether NFO `lockdata` stops scan-time probing.\n- G4, every app plays: Roku, iPhone, iPad and Web (and Android TV if available) play, seek, resume and switch subtitles.\n- G5, recovers by itself: after each G1 and G2 failure, playback works again with no remount, restart or rescan.\n- G6, feels normal: at realistic latency, start and seek times are close to the `.strm` path.\n- G7, soak: 24 hours of repeated kills, restarts and playback with no failure of the above.\n\n**Outcome**\nRecord the result as a conformance assumption, with the numbers. If adopted, open implementation issues (FUSE presentation layer, mode self-test, separate-library setup, operator docs). If not, open the `.strm` improvements.\n\nNeeds the user for G4 client checks (walnut's test Jellyfin added as a second server). Not started: the user wants to talk it through first.",
       "issue": 60
+    },
+    {
+      "title": "Keep a .strm's relay reference when its film returns to the same path",
+      "labels": [
+        "enhancement",
+        "version:1.0"
+      ],
+      "phase": "phase-5",
+      "state": "open",
+      "issue": 61,
+      "body": "See GitHub #61."
     }
   ]
 }
