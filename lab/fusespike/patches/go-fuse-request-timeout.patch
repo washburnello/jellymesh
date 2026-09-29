@@ -1,0 +1,38 @@
+diff -ru go-fuse/fuse/api.go go-fuse/fuse/api.go
+--- go-fuse/fuse/api.go	2026-09-29 00:58:08.697684386 -0400
++++ go-fuse/fuse/api.go	2026-09-29 00:58:08.720365718 -0400
+@@ -384,6 +384,11 @@
+ 	// mount.
+ 	DisabledCapabilities uint64
+ 
++	// RequestTimeout, in seconds, asks the kernel to abort the connection if
++	// any request goes unanswered that long (kernel 6.14+, FUSE_REQUEST_TIMEOUT).
++	// A frozen server then fails its callers instead of hanging them.
++	RequestTimeout uint16
++
+ 	// ExtraCapabilities is a bitmask of capabilities which
+ 	// must be enabled in addition to the defaults.
+ 	ExtraCapabilities uint64
+diff -ru go-fuse/fuse/opcode.go go-fuse/fuse/opcode.go
+--- go-fuse/fuse/opcode.go	2026-09-29 00:58:08.701541853 -0400
++++ go-fuse/fuse/opcode.go	2026-09-29 00:58:08.720714003 -0400
+@@ -133,6 +133,9 @@
+ 	}
+ 
+ 	kernelFlags = kernelFlags &^ server.opts.DisabledCapabilities
++	if server.opts.RequestTimeout > 0 {
++		kernelFlags |= input.Flags64() & CAP_REQUEST_TIMEOUT
++	}
+ 
+ 	// maxPages is the maximum request size we want the kernel to use, in units of
+ 	// memory pages (usually 4kiB). Linux v4.19 and older ignore this and always use
+@@ -156,6 +159,9 @@
+ 		MaxStackDepth:       uint32(server.opts.MaxStackDepth),
+ 	}
+ 	out.setFlags(kernelFlags)
++	if kernelFlags&CAP_REQUEST_TIMEOUT != 0 {
++		out.RequestTimeout = server.opts.RequestTimeout
++	}
+ 	if server.opts.MaxReadAhead != 0 && uint32(server.opts.MaxReadAhead) < out.MaxReadAhead {
+ 		out.MaxReadAhead = uint32(server.opts.MaxReadAhead)
+ 	}
