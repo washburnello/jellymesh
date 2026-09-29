@@ -16,7 +16,10 @@
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 BASE=${FUSESPIKE_BASE:-$HOME/.local/share/jellymesh-fusespike}
-LAN_IP=${LAN_IP:-192.168.87.249}
+# Every LAN address walnut answers on. Its wired interface has no route of
+# its own, so devices reaching the wired address are dropped by reverse-path
+# filtering; the Wi-Fi address always works.
+LAN_IPS=${LAN_IPS:-192.168.87.20 192.168.87.249}
 JF_UID=7777
 url=http://127.0.0.1:18130
 
@@ -76,11 +79,21 @@ up() {
   docker run --rm -v fusespike-jf-config:/c -v fusespike-jf-cache:/k alpine:3 chown -R "$JF_UID:$JF_UID" /c /k
   chmod -R a+rX "$BASE/strm"
   docker run -d --name fusespike-jellyfin --restart unless-stopped --network fusespike --user "$JF_UID:$JF_UID" --memory 2g \
-    -p "127.0.0.1:18130:8096" -p "$LAN_IP:18130:8096" \
+    -p "127.0.0.1:18130:8096" $(for ip in $LAN_IPS; do printf -- '-p %s:18130:8096 ' "$ip"; done) \
     -v fusespike-jf-config:/config -v fusespike-jf-cache:/cache \
     --mount "type=bind,src=$BASE/share,dst=/remote,readonly,bind-propagation=rslave" \
     -v "$BASE/strm:/strm:ro" jellyfin/jellyfin:10.11.11 >/dev/null
   python3 "$here/jellyfin_setup.py" "$url" "$BASE"
+}
+
+# Recreates only the Jellyfin container; its volumes keep the library and accounts.
+restart_jellyfin() {
+  docker rm -f fusespike-jellyfin >/dev/null 2>&1 || true
+  docker run -d --name fusespike-jellyfin --restart unless-stopped --network fusespike --user "$JF_UID:$JF_UID" --memory 2g \
+    -p "127.0.0.1:18130:8096" $(for ip in $LAN_IPS; do printf -- '-p %s:18130:8096 ' "$ip"; done) \
+    -v fusespike-jf-config:/config -v fusespike-jf-cache:/cache \
+    --mount "type=bind,src=$BASE/share,dst=/remote,readonly,bind-propagation=rslave" \
+    -v "$BASE/strm:/strm:ro" jellyfin/jellyfin:10.11.11 >/dev/null
 }
 
 case "${1:-}" in
@@ -89,5 +102,6 @@ case "${1:-}" in
   down) down ;;
   start_mount) start_mount ;;
   start_reader) start_reader ;;
+  restart_jellyfin) restart_jellyfin ;;
   *) echo "usage: env.sh up <films-dir> | down"; exit 2 ;;
 esac
