@@ -1025,6 +1025,113 @@ with plain HTTP, and it forwards each request to the source over mutual TLS.
   bytes it sends (C-PB-3). Serving a stream above the ceiling as a source-side
   transcode, the second half of A-1, is a later step (C-PB-4).
 
+### Presentation through a virtual filesystem (proposed, spike #60)
+
+Status: **proposed**, pending the last gate of the spike (#60, G7 soak,
+2026-09-29 to 30). The spike's code and measurements are in
+`lab/fusespike/`. Nothing here is built into Jellymesh yet.
+
+**Why.** Some clients play a `.strm` item's URL themselves instead of asking
+Jellyfin for it. The Jellyfin Roku app does this for every remote source
+(`LoadVideoContentTask.bs`, M-1), so the TV fetches Jellymesh's loopback
+relay from itself and fails. Presenting remote films to Jellyfin as ordinary
+files makes them indistinguishable from local media. Every client then
+streams through Jellyfin, and the spike showed the same Roku playing,
+seeking, resuming, and switching subtitles (G4). Jellyfin also probes each
+film when it is added, so the real size, runtime, codecs, and HDR details
+are known before playback.
+
+**Shape.**
+
+- **A small mount process**, `jellymesh-mount`, in its own container. It is
+  the only piece holding `/dev/fuse` and `CAP_SYS_ADMIN`. It serves a
+  read-only tree built from a manifest the materializer writes, in place of
+  the `.strm` files and NFOs written today. The tree holds the films, their
+  NFOs, posters, and subtitles, with the same names, layout, grouping,
+  identity, and pins as section 9. Listings, sizes, and small files come
+  from that local manifest, so a library scan never waits on a source. Only
+  film bytes are fetched.
+- **Film bytes** come from the Jellymesh daemon over a local socket. The
+  daemon fetches from the source through the existing media route, so the
+  source still authorizes every request, and the per-destination ceiling and
+  the head cache still apply. It fetches in 1 MiB chunks into a bounded
+  cache, and reads ahead only once reading is sequential (doubling up to 16
+  chunks), so a probe costs about 1 MB and playback is not paced by round
+  trips.
+- **Mount propagation.** The mount reaches Jellyfin's container through a
+  bind with slave propagation, so a remount appears there without
+  restarting Jellyfin.
+
+**Robustness.** Each point was proven by the spike's gates:
+
+- Every read has a hard deadline (10 s in the spike) and fails with an I/O
+  error, never a hang (G1).
+- The mount asks the kernel for a request timeout (`FUSE_REQUEST_TIMEOUT`,
+  20 s). If the process itself deadlocks or freezes, the kernel aborts the
+  connection instead of leaving Jellyfin threads in uninterruptible sleep
+  (G1). go-fuse 2.11 does not send the timeout, so the spike patches it, and
+  the change should go upstream. The kernel feature is recent: FUSE mode
+  must refuse to run on a kernel without it.
+- A watchdog reads a direct-I/O health file through the mount every 5 s. If
+  the mount stops answering, the process exits; the container's restart
+  policy starts it again, and startup detaches the dead mount (G1, G5).
+- An absent or dead mount reads as an inaccessible library root, and
+  Jellyfin keeps the items. In the spike no scenario lost an item or a
+  watched state (G2).
+- If a film's probe read fails, it is retried in the background. Once it is
+  readable again its modification time moves forward an hour, so the next
+  scan probes it. Jellyfin ignores a one-second change (G2-E).
+- Film contents are served only to Jellyfin's uid. Every other process sees
+  names and sizes but cannot read, so backups, indexers, and file shares
+  cannot pull films (G3). Jellyfin must therefore run as a dedicated uid.
+
+**Hard requirement: extraction off.** With trickplay or chapter-image
+extraction enabled, the spike's trickplay task pulled 104 MB a minute per
+film, and would have pulled every film whole (G3). Remote films must live in
+their own libraries with extraction off. A non-administrator service user
+cannot read library options (A-8), so Jellymesh cannot verify this itself.
+The proposal is a second line of defence in the mount:
+
+- Each film is read at full speed up to a burst.
+- Beyond the burst, reads are paced to a small multiple of the film's
+  average bitrate, which is known from the catalog.
+
+Playback and transcoding need no more than real time. A whole-file
+extraction would then cost no more bandwidth than one viewer. This pacing is
+unproven and must be tested.
+
+**Choosing the mode.** A self-test at setup, and after each update, chooses
+FUSE when the host can run it safely and `.strm` otherwise, telling the
+operator why. The mode is never switched per incident: a switch changes
+every item's path, which Jellyfin sees only at its next scan. The self-test
+checks for `/dev/fuse`, the container's privileges, shared mount propagation
+on the host, and a kernel with request timeouts. How it confirms that the
+mount is visible inside Jellyfin's container is open. Moving an existing
+node from `.strm` to FUSE recreates every generated item at a new path, and
+history reattaches by provider identifier (A-14). That migration must be
+tested.
+
+**Costs.**
+
+- About 1 MB per film when it is added, taken from sources' uplinks. With
+  twenty peers and 40,000 items that is about 40 GB, once.
+- Linux hosts only. It will not run on Docker Desktop for macOS or Windows,
+  on Windows-native Jellyfin, or on NAS systems whose Docker lacks FUSE.
+- Two containers instead of one, a privileged mount container, and a patched
+  dependency until the patch is upstream.
+
+**Measured in the spike** (Jellyfin 10.11.11, kernel 7.2, 40 ms of added
+latency):
+
+| | FUSE | `.strm` |
+|---|---|---|
+| Start (first 1 MB) | 0.13 s | 0.05 s |
+| Seek to the middle | 0.10 s | 0.06 s |
+| Sustained | 322 MB/s | 783 MB/s |
+
+Streams failed within 2 to 35 s under every failure injected, with
+Jellyfin's API responsive throughout.
+
 ## 12. Availability and heartbeat behavior
 
 Each Jellymesh Service maintains provider state:
