@@ -792,3 +792,52 @@ func TestNFOsNameTheirSourcesAndCarrySourceMetadata(t *testing.T) {
 		t.Errorf("an episode should name the one source it plays from:\n%s", second)
 	}
 }
+
+// #61: a film withdrawn and returning to the same path, here from another
+// source, keeps its .strm's content, because Jellyfin reads a .strm's URL
+// only when it scans; the reference resolves to nothing while the film is
+// gone, and to the returning item after.
+func TestAReturningFilmKeepsItsReference(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	f.reconcile(t, []store.RemoteItem{item(t, "cedar", "c-1", "lib", "Movie", film)}, everything)
+	records, _ := f.records.All(ctx)
+	path, reference := records[0].Path, records[0].Reference
+	before := f.read(t, path)
+
+	f.reconcile(t, nil, everything)
+	if _, found, _ := f.records.ByReference(ctx, reference); found {
+		t.Fatal("a withdrawn film's reference must resolve to nothing")
+	}
+	f.material.now = time.Now
+	cedarAgain := item(t, "cedar", "c-1", "lib", "Movie", film)
+	f.reconcile(t, []store.RemoteItem{cedarAgain}, everything)
+	if after := f.read(t, path); after != before {
+		t.Fatalf("the returning film's .strm changed: %q then %q", before, after)
+	}
+	if record, found, _ := f.records.ByReference(ctx, reference); !found || record.ItemID != "c-1" {
+		t.Fatalf("the reference should resolve to the returning item: %+v, %v", record, found)
+	}
+}
+
+// #61, A-13: an episode that moves to another source keeps its path and its
+// .strm's content, so Jellyfin plays it from the new source before scanning.
+func TestAnEpisodeMovingSourceKeepsItsReference(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	walnut := show{"walnut", "s", map[string]string{"Tvdb": "81189"}, [][2]int{{1, 1}}}
+	cedar := show{"cedar", "s", map[string]string{"Tvdb": "81189"}, [][2]int{{1, 1}}}
+	f.reconcile(t, showItems(t, walnut, cedar), everything)
+	var path, content string
+	for p := range f.playing(t) {
+		path, content = p, f.read(t, p)
+	}
+	f.reconcile(t, showItems(t, walnut), everything) // cedar, which was playing it, withdraws
+	if f.playing(t)[path] != "walnut" || f.read(t, path) != content {
+		t.Fatalf("the episode should move to walnut at the same path with the same content: %v", f.playing(t))
+	}
+	records, _ := f.records.All(ctx)
+	if len(records) != 1 || records[0].SourceNodeID != "walnut" {
+		t.Fatalf("records: %+v", records)
+	}
+}

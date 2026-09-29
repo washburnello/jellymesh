@@ -186,7 +186,9 @@ func (materializer *Materializer) Reconcile(ctx context.Context, input Input) (R
 		record, known := held[key]
 		reference := record.Reference
 		if !known {
-			if reference, err = store.NewReference(); err != nil {
+			// A path that held a film keeps its reference for what comes
+			// next, so the .strm Jellyfin already read stays valid (#61).
+			if reference, err = materializer.records.ReferenceFor(ctx, plan.strm); err != nil {
 				return result, err
 			}
 		}

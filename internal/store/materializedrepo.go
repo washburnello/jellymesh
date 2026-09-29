@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // Materialized is one playable item the destination has written into its
@@ -61,13 +62,57 @@ func (repo *MaterializedRepository) Save(ctx context.Context, item Materialized)
 	return nil
 }
 
-// Remove forgets an item, revoking its reference.
+// Remove forgets an item, revoking its reference. The reference is kept
+// against the item's path, so that whatever next appears at that path can
+// reuse it (ReferenceFor), but until then it resolves to nothing.
 func (repo *MaterializedRepository) Remove(ctx context.Context, sourceNodeID string, itemID string) error {
-	if _, err := repo.database.SQL().ExecContext(ctx,
-		`DELETE FROM materialized WHERE source_node_id = ? AND item_id = ?`, sourceNodeID, itemID); err != nil {
+	transaction, err := repo.database.SQL().BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer transaction.Rollback()
+	var path, reference string
+	err = transaction.QueryRowContext(ctx, `SELECT path, reference FROM materialized WHERE source_node_id = ? AND item_id = ?`,
+		sourceNodeID, itemID).Scan(&path, &reference)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
 		return fmt.Errorf("remove materialized item: %w", err)
 	}
-	return nil
+	if _, err := transaction.ExecContext(ctx, `DELETE FROM materialized WHERE source_node_id = ? AND item_id = ?`, sourceNodeID, itemID); err != nil {
+		return fmt.Errorf("remove materialized item: %w", err)
+	}
+	if _, err := transaction.ExecContext(ctx, `INSERT INTO retired_references (path, reference, retired_at) VALUES (?, ?, ?)
+		ON CONFLICT (path) DO UPDATE SET reference = excluded.reference, retired_at = excluded.retired_at`,
+		path, reference, FormatTime(nowUTC())); err != nil {
+		return fmt.Errorf("retire reference: %w", err)
+	}
+	return transaction.Commit()
+}
+
+// RetiredReferenceLife is how long a withdrawn path's reference is kept for
+// reuse. Jellyfin rescans on the operator's schedule, often hourly, so a
+// week covers any schedule with room to spare.
+const RetiredReferenceLife = 7 * 24 * time.Hour
+
+// ReferenceFor returns the reference for a new item at path: the one path
+// last held, if it was retired within RetiredReferenceLife, and otherwise a
+// fresh one. A reused reference is taken out of retirement.
+func (repo *MaterializedRepository) ReferenceFor(ctx context.Context, path string) (string, error) {
+	cutoff := FormatTime(nowUTC().Add(-RetiredReferenceLife))
+	if _, err := repo.database.SQL().ExecContext(ctx, `DELETE FROM retired_references WHERE retired_at < ?`, cutoff); err != nil {
+		return "", fmt.Errorf("prune retired references: %w", err)
+	}
+	var reference string
+	err := repo.database.SQL().QueryRowContext(ctx, `DELETE FROM retired_references WHERE path = ? RETURNING reference`, path).Scan(&reference)
+	if err == nil {
+		return reference, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("reuse reference: %w", err)
+	}
+	return NewReference()
 }
 
 // ByReference resolves a reference.

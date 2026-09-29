@@ -333,6 +333,19 @@ var migrations = []string{
 		last_used   TEXT NOT NULL
 	);
 	`,
+
+	// 14: the reference each withdrawn .strm path last held. Jellyfin reads
+	// a .strm's URL only when it scans (A-12), so a film returning to the
+	// same path, or an episode moving to another source (A-13), keeps its
+	// reference, rebound to the new item, and plays before the next scan.
+	// A retired reference resolves to nothing until it is reused.
+	`
+	CREATE TABLE retired_references (
+		path       TEXT PRIMARY KEY,
+		reference  TEXT NOT NULL UNIQUE,
+		retired_at TEXT NOT NULL
+	);
+	`,
 }
 
 func (database *DB) migrate(ctx context.Context) error {

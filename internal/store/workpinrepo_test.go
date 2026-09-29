@@ -44,3 +44,35 @@ func TestWorkPinsRoundTripTouchAndPrune(t *testing.T) {
 		t.Fatalf("the touched pin should remain: %+v", pins)
 	}
 }
+
+// #61: a withdrawn path's reference is reused by what next appears there,
+// once, and only within RetiredReferenceLife.
+func TestRetiredReferencesAreReusedOnceAndExpire(t *testing.T) {
+	database := openTestDB(t)
+	repo := NewMaterializedRepository(database)
+	ctx := context.Background()
+	save := func(item string, path string, reference string) {
+		if err := repo.Save(ctx, Materialized{SourceNodeID: "cedar", ItemID: item, LibraryID: "lib", Reference: reference, Path: path, Checksum: "x"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	save("a", "Movies/A/A.strm", "ref-a")
+	if err := repo.Remove(ctx, "cedar", "a"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := repo.ReferenceFor(ctx, "Movies/A/A.strm"); got != "ref-a" {
+		t.Fatalf("the path's reference should be reused, got %q", got)
+	}
+	if got, _ := repo.ReferenceFor(ctx, "Movies/A/A.strm"); got == "ref-a" {
+		t.Fatal("a retired reference is reused only once")
+	}
+
+	save("b", "Movies/B/B.strm", "ref-b")
+	repo.Remove(ctx, "cedar", "b")
+	real := nowUTC
+	nowUTC = func() time.Time { return real().Add(RetiredReferenceLife + time.Hour) }
+	defer func() { nowUTC = real }()
+	if got, _ := repo.ReferenceFor(ctx, "Movies/B/B.strm"); got == "ref-b" {
+		t.Fatal("a reference retired longer ago than RetiredReferenceLife must not be reused")
+	}
+}
