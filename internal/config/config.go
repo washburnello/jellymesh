@@ -183,7 +183,7 @@ func FromLookup(lookup func(string) (string, bool)) (Config, error) {
 	}
 	cfg.HeadCacheBytes = megabytes << 20
 
-	if direct := valueOrDefault(lookup, "JELLYMESH_DIRECT_LISTEN_ADDR", "0.0.0.0:41641"); direct != "off" {
+	if direct := valueOrDefault(lookup, "JELLYMESH_DIRECT_LISTEN_ADDR", "0.0.0.0:44843"); direct != "off" {
 		if _, _, err := net.SplitHostPort(direct); err != nil {
 			return Config{}, fmt.Errorf("invalid JELLYMESH_DIRECT_LISTEN_ADDR (host:port, or off): %w", err)
 		}

@@ -9,7 +9,11 @@ to provide it, and how to tell whether it works.
 | Port | Protocol | Required | Why |
 |---|---|---|---|
 | 8443 (the federation port) | TCP | **Yes** | Members reach you here for your catalog, joining, group state, and to arrange direct paths. Media falls back to it. |
-| 41641 (the direct-path port) | UDP | Recommended | Media between homes goes directly over it when both routers allow a hole punch. |
+| 44843 (the direct-path port) | UDP | Recommended | Media between homes goes directly over it when both routers allow a hole punch. |
+
+The UDP default avoids 41641, which Tailscale uses. If something else holds
+44843, `jellymesh status` shows direct paths as off, with the reason; choose
+another port with `JELLYMESH_DIRECT_LISTEN_ADDR`.
 
 Set `JELLYMESH_PUBLIC_HOSTNAME` to the name or address, and port, where
 others reach the TCP port, for example `mesh.example.org:8443`. When someone
@@ -26,7 +30,7 @@ path.
 1. Give the server a fixed LAN address: a DHCP reservation in the router, or
    a static address.
 2. Forward **TCP 8443** to the server's LAN address, port 8443.
-3. Forward **UDP 41641** too, if you can. With it forwarded, direct paths
+3. Forward **UDP 44843** too, if you can. With it forwarded, direct paths
    need no punching at all.
 4. Set `JELLYMESH_PUBLIC_HOSTNAME` to your public address or a DNS name that
    points at it, with the port.
@@ -82,11 +86,11 @@ Nothing to configure for most homes:
 - Until the path opens, and whenever it fails, media goes over the TCP port.
   Nobody watching notices the switch.
 
-- **In Docker, publish the port:** add `"41641:41641/udp"` to `ports`, as
+- **In Docker, publish the port:** add `"44843:44843/udp"` to `ports`, as
   `deploy/docker-compose.yml` does. Otherwise Docker's own NAT moves the
   port.
 - **Members on your own network:** add your server's LAN address to
-  `JELLYMESH_DIRECT_CANDIDATES` (for example `192.168.1.20:41641`), so a
+  `JELLYMESH_DIRECT_CANDIDATES` (for example `192.168.1.20:44843`), so a
   member in the same house connects locally.
 - **Turning it off:** `JELLYMESH_DIRECT_LISTEN_ADDR=off`. Media then always
   uses TCP.
@@ -110,7 +114,7 @@ cannot loop back to their own public address.
 | Field | Meaning |
 |---|---|
 | `outside_address` | Where your node appears to be on the internet |
-| `varies_by_destination: true` | Your router gives each destination its own port, so direct paths cannot be punched. Media stays on TCP; forwarding UDP 41641 fixes it |
+| `varies_by_destination: true` | Your router gives each destination its own port, so direct paths cannot be punched. Media stays on TCP; forwarding UDP 44843 fixes it |
 | `peers[].path` | `direct` or `tcp` for each member you have played from, with the last error if a direct path failed |
 
 ## Troubleshooting
@@ -120,5 +124,5 @@ cannot loop back to their own public address.
 | A join is refused with "cannot be reached at its advertised address" | The TCP port is not reachable from outside, or `JELLYMESH_PUBLIC_HOSTNAME` is wrong. Check from outside as above |
 | A join is refused with "a different node answers" | The address or port forward points at another Jellymesh node. Fix the forward or the hostname |
 | Members cannot connect through Funnel | Funnel is in HTTPS mode. Re-run it with `--tcp` |
-| `direct` shows `tcp` with "no outside address to offer" | STUN servers are unreachable, or your NAT varies its mapping. Media works over TCP; forward UDP 41641 to allow direct paths |
-| Everything works but media is slow through Funnel | Direct paths are not opening (see `peers[].last_error`). Forward UDP 41641 if you can |
+| `direct` shows `tcp` with "no outside address to offer" | STUN servers are unreachable, or your NAT varies its mapping. Media works over TCP; forward UDP 44843 to allow direct paths |
+| Everything works but media is slow through Funnel | Direct paths are not opening (see `peers[].last_error`). Forward UDP 44843 if you can |

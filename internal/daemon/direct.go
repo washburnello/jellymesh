@@ -65,7 +65,8 @@ type peerPath struct {
 
 // openDirect starts the direct-path endpoint, or returns nil when direct
 // paths are off or the socket cannot be opened, in which case media uses
-// TCP only.
+// TCP only. A socket that cannot be opened (for example, a port another
+// program holds) is reported by jellymesh status, not only logged.
 func openDirect(n *Node) *directPaths {
 	if n.cfg.DirectListenAddress == "" {
 		return nil
@@ -73,6 +74,7 @@ func openDirect(n *Node) *directPaths {
 	endpoint, err := natpath.Listen(n.cfg.DirectListenAddress, n.identity.TLSCertificate())
 	if err != nil {
 		n.logger.Printf("direct paths off: %v", err)
+		n.directError = err.Error()
 		return nil
 	}
 	direct := &directPaths{node: n, endpoint: endpoint, acceptor: natpath.NewAcceptor(n.nodeID), peers: map[string]*peerPath{}}
@@ -324,6 +326,7 @@ func (direct *directPaths) closeAll() {
 // DirectStatus reports direct paths for `jellymesh status` (C-NT-6).
 type DirectStatus struct {
 	Enabled             bool             `json:"enabled"`
+	OffReason           string           `json:"off_reason,omitempty"`
 	LocalAddress        string           `json:"local_address,omitempty"`
 	OutsideAddress      string           `json:"outside_address,omitempty"`
 	VariesByDestination bool             `json:"varies_by_destination,omitempty"`

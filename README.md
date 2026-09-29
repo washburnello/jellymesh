@@ -41,7 +41,7 @@ Afterwards, `jellymesh remote` lists what the other members publish, and `jellym
 
 Jellymesh reads Jellyfin as a dedicated user that is not an administrator. Create it in Jellyfin, give it access to exactly the libraries you may publish, and set `JELLYMESH_JELLYFIN_USER` and `JELLYMESH_JELLYFIN_PASSWORD`. List libraries that must never be shared, such as a family library, in `JELLYMESH_PROTECTED_LIBRARIES`, by library ID.
 
-Members reach each other at their advertised address, `JELLYMESH_PUBLIC_HOSTNAME`, over TCP. It must be reachable from outside your network, by a router port forward or by Tailscale Funnel in raw-TCP mode (assumption A-16); joining checks it. Media then prefers a direct UDP path between the two homes, opened by hole punching on `JELLYMESH_DIRECT_LISTEN_ADDR` (UDP 41641 by default; publish it from the container), and falls back to TCP by itself when no direct path can be opened. `jellymesh status` shows which path each peer uses.
+Members reach each other at their advertised address, `JELLYMESH_PUBLIC_HOSTNAME`, over TCP. It must be reachable from outside your network, by a router port forward or by Tailscale Funnel in raw-TCP mode (assumption A-16); joining checks it. Media then prefers a direct UDP path between the two homes, opened by hole punching on `JELLYMESH_DIRECT_LISTEN_ADDR` (UDP 44843 by default; publish it from the container), and falls back to TCP by itself when no direct path can be opened. `jellymesh status` shows which path each peer uses.
 
 In a container deployment, prefix each command with `docker compose exec jellymesh /jellymesh` in place of `jellymesh`. The admin API listens on loopback only.
 

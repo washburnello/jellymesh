@@ -607,7 +607,7 @@ The advertised addresses are known to every member through the roster, so
 there is no central matchmaker: each pair arranges its own path.
 
 **As built.** The daemon opens the UDP socket at
-`JELLYMESH_DIRECT_LISTEN_ADDR` (default `0.0.0.0:41641`; `off` disables
+`JELLYMESH_DIRECT_LISTEN_ADDR` (default `0.0.0.0:44843`; `off` disables
 direct paths) and refreshes its outside address from
 `JELLYMESH_STUN_SERVERS` every 15 minutes. It offers that address only if
 its NAT keeps one mapping for every destination, plus any addresses in
@@ -622,7 +622,7 @@ same network. Playback never waits for a direct path:
   part-way is continued over TCP from the byte where it stopped.
 
 `jellymesh status` shows each peer's path. In a container, publish UDP
-41641 so that Docker's own NAT does not move the port.
+44843 so that Docker's own NAT does not move the port.
 
 **Security of the UDP surface** (reviewed 2026-09-29, #55, C-NT-7):
 

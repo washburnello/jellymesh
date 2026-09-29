@@ -18,7 +18,7 @@ services:
       - "8443:8443"
       # Direct paths between members (assumption A-16): UDP for QUIC and
       # STUN. Publishing it keeps Docker's own NAT from moving the port.
-      - "41641:41641/udp"
+      - "44843:44843/udp"
       # The relay, for Jellyfin only. Publish it on loopback, never publicly.
       - "127.0.0.1:8090:8090"
     volumes:
@@ -57,9 +57,9 @@ services:
       # Direct paths: the UDP socket (or "off"), the STUN servers that tell
       # the node its outside address, and any further addresses to offer,
       # such as this host's LAN address for members on the same network.
-      JELLYMESH_DIRECT_LISTEN_ADDR: "0.0.0.0:41641"
+      JELLYMESH_DIRECT_LISTEN_ADDR: "0.0.0.0:44843"
       # JELLYMESH_STUN_SERVERS: "stun.l.google.com:19302,stun.cloudflare.com:3478"
-      # JELLYMESH_DIRECT_CANDIDATES: "192.168.1.20:41641"
+      # JELLYMESH_DIRECT_CANDIDATES: "192.168.1.20:44843"
     extra_hosts:
       - "host.docker.internal:host-gateway"
 

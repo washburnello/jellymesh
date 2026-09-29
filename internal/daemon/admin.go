@@ -172,6 +172,12 @@ type MemberStatus struct {
 // Status reports the node's identity and, if it has one, its group.
 func (n *Node) Status(ctx context.Context) (Status, error) {
 	status := Status{NodeID: n.nodeID, Fingerprint: n.identity.Fingerprint(), PublicAddress: n.cfg.PublicAddress(), Direct: n.direct.status()}
+	if n.direct == nil {
+		status.Direct.OffReason = "direct paths are turned off"
+		if n.directError != "" {
+			status.Direct.OffReason = n.directError
+		}
+	}
 	runtime, err := n.current()
 	if err != nil {
 		return status, nil

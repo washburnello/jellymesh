@@ -74,8 +74,9 @@ type Node struct {
 	heads        *relay.HeadCache
 
 	// direct is the direct-path endpoint (A-16), or nil when direct paths
-	// are off.
-	direct *directPaths
+	// are off; directError says why, when they are off by failure.
+	direct      *directPaths
+	directError string
 
 	mutex sync.Mutex
 	clock func() time.Time

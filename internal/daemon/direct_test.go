@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -256,7 +257,7 @@ func TestMediaTakesTheDirectPathAndFallsBackToTCP(t *testing.T) {
 // then stays on TCP. Configured addresses are still offered.
 func TestAVaryingMappingIsNotOffered(t *testing.T) {
 	direct := &directPaths{node: &Node{cfg: config.Config{}}, peers: map[string]*peerPath{}}
-	outside := netip.MustParseAddrPort("198.51.100.7:41641")
+	outside := netip.MustParseAddrPort("198.51.100.7:44843")
 	direct.discovered = natpath.Result{Address: outside}
 	if candidates, err := direct.candidates(); err != nil || len(candidates) != 1 || candidates[0] != outside {
 		t.Fatalf("an endpoint-independent mapping should be offered: %v, %v", candidates, err)
@@ -265,8 +266,8 @@ func TestAVaryingMappingIsNotOffered(t *testing.T) {
 	if _, err := direct.candidates(); !errors.Is(err, errNoOutsideAddress) {
 		t.Fatalf("a varying mapping must not be offered: %v", err)
 	}
-	direct.node.cfg.DirectCandidates = []string{"192.168.87.20:41641"}
-	if candidates, err := direct.candidates(); err != nil || len(candidates) != 1 || candidates[0].String() != "192.168.87.20:41641" {
+	direct.node.cfg.DirectCandidates = []string{"192.168.87.20:44843"}
+	if candidates, err := direct.candidates(); err != nil || len(candidates) != 1 || candidates[0].String() != "192.168.87.20:44843" {
 		t.Fatalf("a configured LAN address should still be offered: %v, %v", candidates, err)
 	}
 }
@@ -294,5 +295,23 @@ func TestTheCeilingHoldsOverTheDirectPath(t *testing.T) {
 	// 1.5 MB at 1 MB/s, less the limiter's initial burst.
 	if minimum := time.Duration(float64(len(media)-ceiling) / ceiling * float64(time.Second)); elapsed < minimum {
 		t.Fatalf("the ceiling did not hold over the direct path: %d bytes in %v, want at least %v", len(media), elapsed, minimum)
+	}
+}
+
+// C-NT-6: when the direct-path port cannot be opened, as when another
+// program such as Tailscale holds it, the node still runs on TCP and its
+// status says why direct paths are off.
+func TestABusyDirectPortIsReported(t *testing.T) {
+	busy, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+	cedar := startDaemonWith(t, "cedar", t.TempDir(), "127.0.0.1:0", func(cfg *config.Config) {
+		cfg.DirectListenAddress = busy.LocalAddr().String()
+	})
+	status := cedar.status().Direct
+	if status.Enabled || !strings.Contains(status.OffReason, "address already in use") {
+		t.Fatalf("a busy port should turn direct paths off with the reason: %+v", status)
 	}
 }

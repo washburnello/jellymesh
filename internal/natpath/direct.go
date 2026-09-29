@@ -72,7 +72,7 @@ type datagram struct {
 	from net.Addr
 }
 
-// Listen opens the endpoint on address (such as ":0" or "0.0.0.0:41641")
+// Listen opens the endpoint on address (such as ":0" or "0.0.0.0:44843")
 // with the node's certificate.
 func Listen(address string, cert tls.Certificate) (*Endpoint, error) {
 	local, err := net.ResolveUDPAddr("udp", address)

@@ -12,7 +12,7 @@ import (
 )
 
 var (
-	cedarOutside  = netip.MustParseAddrPort("198.98.94.5:41641")
+	cedarOutside  = netip.MustParseAddrPort("198.98.94.5:44843")
 	walnutOutside = netip.MustParseAddrPort("203.0.113.20:40000")
 	walnutLAN     = netip.MustParseAddrPort("192.168.87.20:40000")
 )
