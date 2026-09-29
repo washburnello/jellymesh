@@ -13,6 +13,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -75,6 +76,21 @@ type Config struct {
 	// bytes, which keeps Jellyfin's repeated probes off sources' uplinks
 	// (C-PB-5). Zero turns the cache off.
 	HeadCacheBytes int64
+
+	// DirectListenAddress is the UDP socket for direct paths between
+	// members (assumption A-16), shared by QUIC and STUN. Empty turns
+	// direct paths off; media then always uses the TCP federation
+	// connection.
+	DirectListenAddress string
+	// STUNServers tell the node its outside UDP address.
+	STUNServers []string
+	// DirectCandidates are further addresses to offer peers, such as this
+	// host's LAN address for members on the same network.
+	DirectCandidates []string
+	// DirectOfferLocal offers the direct socket's own address and accepts
+	// loopback addresses in offers. It exists for nodes on one host, as in
+	// tests; it is never read from the environment.
+	DirectOfferLocal bool
 }
 
 func Load() (Config, error) {
@@ -167,6 +183,20 @@ func FromLookup(lookup func(string) (string, bool)) (Config, error) {
 	}
 	cfg.HeadCacheBytes = megabytes << 20
 
+	if direct := valueOrDefault(lookup, "JELLYMESH_DIRECT_LISTEN_ADDR", "0.0.0.0:41641"); direct != "off" {
+		if _, _, err := net.SplitHostPort(direct); err != nil {
+			return Config{}, fmt.Errorf("invalid JELLYMESH_DIRECT_LISTEN_ADDR (host:port, or off): %w", err)
+		}
+		cfg.DirectListenAddress = direct
+	}
+	cfg.STUNServers = splitList(valueOrDefault(lookup, "JELLYMESH_STUN_SERVERS", "stun.l.google.com:19302,stun.cloudflare.com:3478"))
+	cfg.DirectCandidates = splitList(valueOrDefault(lookup, "JELLYMESH_DIRECT_CANDIDATES", ""))
+	for _, candidate := range cfg.DirectCandidates {
+		if _, err := netip.ParseAddrPort(candidate); err != nil {
+			return Config{}, fmt.Errorf("JELLYMESH_DIRECT_CANDIDATES must list ip:port addresses: %w", err)
+		}
+	}
+
 	federationEnabledValue := valueOrDefault(lookup, "JELLYMESH_FEDERATION_ENABLED", "false")
 	if cfg.FederationEnabled, err = strconv.ParseBool(federationEnabledValue); err != nil {
 		return Config{}, fmt.Errorf("invalid JELLYMESH_FEDERATION_ENABLED: %w", err)
@@ -185,6 +215,16 @@ func FromLookup(lookup func(string) (string, bool)) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func splitList(value string) []string {
+	var out []string
+	for _, part := range strings.Split(value, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 func address(lookup func(string) (string, bool), key string, fallback string) (string, error) {

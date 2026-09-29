@@ -80,6 +80,7 @@ func NewOffer(from string, to string, candidates []netip.AddrPort, now time.Time
 // for as long as they could be replayed.
 type Acceptor struct {
 	self  string
+	local bool // accept loopback candidates: nodes on one host only
 	now   func() time.Time
 	mutex sync.Mutex
 	seen  map[string]time.Time // nonce -> when it can be forgotten
@@ -89,6 +90,10 @@ type Acceptor struct {
 func NewAcceptor(self string) *Acceptor {
 	return &Acceptor{self: self, now: time.Now, seen: map[string]time.Time{}}
 }
+
+// AllowLocal lets offers name loopback addresses, for nodes on one host
+// such as tests. Never set it for a node that talks to other hosts.
+func (acceptor *Acceptor) AllowLocal() { acceptor.local = true }
 
 // Accept checks an offer that arrived from the authenticated member caller.
 func (acceptor *Acceptor) Accept(caller string, offer Offer) error {
@@ -102,7 +107,7 @@ func (acceptor *Acceptor) Accept(caller string, offer Offer) error {
 	if !now.Add(-clockSkew).Before(offer.Expires) || offer.Expires.After(now.Add(OfferLifetime+clockSkew)) {
 		return ErrOfferExpired
 	}
-	if err := checkCandidates(offer.Candidates); err != nil {
+	if err := checkCandidates(offer.Candidates, acceptor.local); err != nil {
 		return err
 	}
 	if len(offer.Nonce) != 32 {
@@ -122,14 +127,14 @@ func (acceptor *Acceptor) Accept(caller string, offer Offer) error {
 	return nil
 }
 
-func checkCandidates(candidates []netip.AddrPort) error {
+func checkCandidates(candidates []netip.AddrPort, local bool) error {
 	if len(candidates) == 0 || len(candidates) > maxCandidates {
 		return fmt.Errorf("%w: %d candidates", ErrOfferInvalid, len(candidates))
 	}
 	for _, candidate := range candidates {
 		address := candidate.Addr()
 		if !candidate.IsValid() || candidate.Port() == 0 || address.IsUnspecified() || address.IsMulticast() ||
-			address.IsLoopback() || address.IsLinkLocalUnicast() || address.IsLinkLocalMulticast() {
+			(address.IsLoopback() && !local) || address.IsLinkLocalUnicast() || address.IsLinkLocalMulticast() {
 			return fmt.Errorf("%w: %v", ErrOfferInvalid, candidate)
 		}
 	}

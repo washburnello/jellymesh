@@ -27,6 +27,9 @@ func (routes *federationRoutes) ServeHTTP(response http.ResponseWriter, request 
 		services := []federation.Routes{routes.node.server}
 		if runtime != nil {
 			services = append(services, runtime.inviter, runtime.catalogServer)
+			if routes.node.direct != nil {
+				services = append(services, routes.node.direct.offerRoutes(runtime))
+			}
 		}
 		routes.handler = federation.Handler(routes.node.server, services...)
 		routes.built = runtime

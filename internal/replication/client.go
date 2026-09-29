@@ -93,6 +93,13 @@ func (client *Client) transportFor(peer Peer) *http.Transport {
 	return created
 }
 
+// HTTPClient returns an HTTP client for peer over mutual TLS, pinned to its
+// key, for callers that speak their own protocol to it, such as direct-path
+// offers.
+func (client *Client) HTTPClient(peer Peer) *http.Client {
+	return &http.Client{Transport: client.transportFor(peer), Timeout: client.timeout}
+}
+
 // Head returns the peer's log head for groupID.
 func (client *Client) Head(ctx context.Context, peer Peer, groupID string) (grouplog.Head, error) {
 	var head grouplog.Head

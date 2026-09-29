@@ -73,6 +73,10 @@ type Node struct {
 	materializer *materialize.Materializer
 	heads        *relay.HeadCache
 
+	// direct is the direct-path endpoint (A-16), or nil when direct paths
+	// are off.
+	direct *directPaths
+
 	mutex sync.Mutex
 	clock func() time.Time
 	group *groupRuntime
@@ -165,8 +169,10 @@ func Open(ctx context.Context, cfg config.Config, logger *log.Logger) (*Node, er
 		}
 		n.materializer.OnRemove = n.heads.Remove
 	}
+	n.direct = openDirect(n)
 	groupIDs, err := n.logs.ListGroupIDs(ctx)
 	if err != nil {
+		n.direct.close()
 		database.Close()
 		return nil, err
 	}
@@ -188,8 +194,11 @@ func Open(ctx context.Context, cfg config.Config, logger *log.Logger) (*Node, er
 	return n, nil
 }
 
-// Close releases the node's database.
-func (n *Node) Close() error { return n.database.Close() }
+// Close releases the node's direct-path socket and database.
+func (n *Node) Close() error {
+	n.direct.close()
+	return n.database.Close()
+}
 
 // NodeID is this node's stable identifier.
 func (n *Node) NodeID() string { return n.nodeID }
@@ -579,6 +588,18 @@ func (n *Node) SyncOnce(ctx context.Context) (SyncResult, error) {
 func (n *Node) Run(ctx context.Context, federationListener net.Listener, interval time.Duration) error {
 	server := newHTTPServer(n.FederationHandler())
 	errs := make(chan error, 1)
+	if n.direct != nil {
+		go func() {
+			for {
+				n.direct.discover(ctx)
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(discoveryInterval):
+				}
+			}
+		}()
+	}
 	go func() {
 		errs <- server.Serve(tlsListener(federationListener, federation.TLSConfig(n.identity)))
 	}()

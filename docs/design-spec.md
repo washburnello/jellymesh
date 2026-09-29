@@ -606,6 +606,24 @@ and a Funnel-only node still serves media directly whenever punching works.
 The advertised addresses are known to every member through the roster, so
 there is no central matchmaker: each pair arranges its own path.
 
+**As built.** The daemon opens the UDP socket at
+`JELLYMESH_DIRECT_LISTEN_ADDR` (default `0.0.0.0:41641`; `off` disables
+direct paths) and refreshes its outside address from
+`JELLYMESH_STUN_SERVERS` every 15 minutes. It offers that address only if
+its NAT keeps one mapping for every destination, plus any addresses in
+`JELLYMESH_DIRECT_CANDIDATES`, such as a LAN address for members on the
+same network. Playback never waits for a direct path:
+- The first media request to a peer goes over TCP and starts an attempt in
+  the background.
+- Later requests use the direct path once it is open.
+- A failed attempt is retried no sooner than 2 minutes later, after
+  conntrack has forgotten it.
+- A direct request that fails is retried over TCP, and a body that breaks
+  part-way is continued over TCP from the byte where it stopped.
+
+`jellymesh status` shows each peer's path. In a container, publish UDP
+41641 so that Docker's own NAT does not move the port.
+
 Not in the first cut: relaying signalling through a third member when
 neither node is reachable (the requirement above rules that case out),
 relaying media through a third member when punching fails at both ends, and

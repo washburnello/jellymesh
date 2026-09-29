@@ -146,6 +146,7 @@ type Status struct {
 	Fingerprint   node.Fingerprint `json:"fingerprint"`
 	PublicAddress string           `json:"public_address"`
 	Group         *GroupStatus     `json:"group,omitempty"`
+	Direct        DirectStatus     `json:"direct"`
 }
 
 type GroupStatus struct {
@@ -170,7 +171,7 @@ type MemberStatus struct {
 
 // Status reports the node's identity and, if it has one, its group.
 func (n *Node) Status(ctx context.Context) (Status, error) {
-	status := Status{NodeID: n.nodeID, Fingerprint: n.identity.Fingerprint(), PublicAddress: n.cfg.PublicAddress()}
+	status := Status{NodeID: n.nodeID, Fingerprint: n.identity.Fingerprint(), PublicAddress: n.cfg.PublicAddress(), Direct: n.direct.status()}
 	runtime, err := n.current()
 	if err != nil {
 		return status, nil

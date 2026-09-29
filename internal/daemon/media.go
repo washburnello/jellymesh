@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -75,7 +76,11 @@ func (access sourceAccess) peer(sourceID string) (replication.Peer, error) {
 	return access.node.peer(runtime, sourceID)
 }
 
-// Media satisfies relay.Upstream.
+// Media satisfies relay.Upstream. It takes a direct path to the source when
+// one is open (A-16), as the same request to the same handler over HTTP/3,
+// and TCP otherwise. If the direct path fails before answering, the request
+// goes over TCP; if it fails part-way through a body, the rest is fetched
+// over TCP from where it stopped, so the viewer sees no error (C-NT-6).
 func (access sourceAccess) Media(ctx context.Context, sourceID string, method string, itemID string, header http.Header) (*http.Response, error) {
 	peer, err := access.peer(sourceID)
 	if err != nil {
@@ -85,8 +90,105 @@ func (access sourceAccess) Media(ctx context.Context, sourceID string, method st
 	if err != nil {
 		return nil, err
 	}
-	return access.node.client.Stream(ctx, peer, method, path, header)
+	tcp := func(header http.Header) (*http.Response, error) {
+		return access.node.client.Stream(ctx, peer, method, path, header)
+	}
+	if client, ok := access.node.direct.client(sourceID); ok {
+		request, err := http.NewRequestWithContext(ctx, method, "https://direct"+path, nil)
+		if err == nil {
+			for key, values := range header {
+				request.Header[key] = append([]string(nil), values...)
+			}
+			response, err := client.Do(request)
+			if err == nil {
+				if method == http.MethodGet {
+					response.Body = resumeOverTCP(ctx, response, func(from int64, end int64) (io.ReadCloser, error) {
+						return reopenFrom(tcp, header, from, end)
+					}, func(err error) { access.node.direct.failed(sourceID, err) })
+				}
+				return response, nil
+			}
+			access.node.direct.failed(sourceID, err)
+		}
+	}
+	return tcp(header)
 }
+
+// reopenFrom asks for the rest of a body, from offset from to end (or to
+// the end of the file when end is negative), and accepts only an answer
+// that starts exactly there.
+func reopenFrom(open func(http.Header) (*http.Response, error), header http.Header, from int64, end int64) (io.ReadCloser, error) {
+	resumed := header.Clone()
+	if resumed == nil {
+		resumed = http.Header{}
+	}
+	if end >= 0 {
+		resumed.Set("Range", fmt.Sprintf("bytes=%d-%d", from, end))
+	} else {
+		resumed.Set("Range", fmt.Sprintf("bytes=%d-", from))
+	}
+	response, err := open(resumed)
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode != http.StatusPartialContent || !strings.HasPrefix(response.Header.Get("Content-Range"), fmt.Sprintf("bytes %d-", from)) {
+		response.Body.Close()
+		return nil, fmt.Errorf("the source did not resume at %d: %s %q", from, response.Status, response.Header.Get("Content-Range"))
+	}
+	return response.Body, nil
+}
+
+// resumeOverTCP wraps a direct response's body so that a failure part-way
+// through is continued over TCP, once.
+func resumeOverTCP(ctx context.Context, response *http.Response, reopen func(from int64, end int64) (io.ReadCloser, error), failed func(error)) io.ReadCloser {
+	body := &resumingBody{ctx: ctx, body: response.Body, reopen: reopen, failed: failed, end: -1}
+	switch response.StatusCode {
+	case http.StatusPartialContent:
+		var total int64
+		if _, err := fmt.Sscanf(response.Header.Get("Content-Range"), "bytes %d-%d/%d", &body.next, &body.end, &total); err != nil {
+			fmt.Sscanf(response.Header.Get("Content-Range"), "bytes %d-%d/*", &body.next, &body.end)
+		}
+	case http.StatusOK:
+		if response.ContentLength >= 0 {
+			body.end = response.ContentLength - 1
+		}
+	default:
+		body.resumed = true // an error answer is passed through as it is
+	}
+	return body
+}
+
+type resumingBody struct {
+	ctx     context.Context
+	body    io.ReadCloser
+	reopen  func(from int64, end int64) (io.ReadCloser, error)
+	failed  func(error)
+	next    int64 // offset of the next byte in the file
+	end     int64 // last offset expected, or -1 if unknown
+	resumed bool
+}
+
+func (body *resumingBody) Read(p []byte) (int, error) {
+	n, err := body.body.Read(p)
+	body.next += int64(n)
+	if err == nil || errors.Is(err, io.EOF) || body.resumed || body.ctx.Err() != nil {
+		return n, err
+	}
+	body.resumed = true
+	body.failed(err)
+	body.body.Close()
+	rest, reopenErr := body.reopen(body.next, body.end)
+	if reopenErr != nil {
+		return n, err
+	}
+	body.body = rest
+	if n > 0 {
+		return n, nil
+	}
+	return body.Read(p)
+}
+
+func (body *resumingBody) Close() error { return body.body.Close() }
 
 func (access sourceAccess) fetch(ctx context.Context, sourceID string, path string) ([]byte, error) {
 	peer, err := access.peer(sourceID)
