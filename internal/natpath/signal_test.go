@@ -46,7 +46,7 @@ func TestOffersAreBoundToThePairAndUsedOnce(t *testing.T) {
 	}
 
 	late, _ := NewOffer("walnut", "cedar", []netip.AddrPort{walnutOutside}, now)
-	fixedClock(cedar, now.Add(OfferLifetime+time.Second))
+	fixedClock(cedar, now.Add(OfferLifetime+clockSkew+time.Second))
 	if err := cedar.Accept("walnut", late); !errors.Is(err, ErrOfferExpired) {
 		t.Fatalf("an expired offer must be refused: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestOffersAreExchangedOverTheMemberRoute(t *testing.T) {
 			return member, member == "walnut" || member == "juniper"
 		},
 		Answer:   func(context.Context, string) ([]netip.AddrPort, error) { return []netip.AddrPort{cedarOutside}, nil },
-		Accepted: func(offer Offer) { accepted = append(accepted, offer) },
+		Accepted: func(offer Offer, _ time.Time) { accepted = append(accepted, offer) },
 	}
 	members := http.NewServeMux()
 	server.Register(nil, members)
@@ -113,7 +113,7 @@ func TestOffersAreExchangedOverTheMemberRoute(t *testing.T) {
 
 	walnut := NewAcceptor("walnut")
 	offer, _ := NewOffer("walnut", "cedar", []netip.AddrPort{walnutOutside}, time.Now())
-	answer, err := Exchange(ctx, as("walnut"), ts.URL, "group-1", offer, walnut)
+	answer, _, err := Exchange(ctx, as("walnut"), ts.URL, "group-1", offer, walnut)
 	if err != nil {
 		t.Fatalf("exchange: %v", err)
 	}
@@ -124,19 +124,19 @@ func TestOffersAreExchangedOverTheMemberRoute(t *testing.T) {
 		t.Fatal("the accepted offer should be handed on for punching")
 	}
 
-	if _, err := Exchange(ctx, as("walnut"), ts.URL, "group-1", offer, walnut); err == nil {
+	if _, _, err := Exchange(ctx, as("walnut"), ts.URL, "group-1", offer, walnut); err == nil {
 		t.Fatal("a replayed offer must be refused over the route too")
 	}
 	stranger, _ := NewOffer("stranger", "cedar", []netip.AddrPort{walnutOutside}, time.Now())
-	if _, err := Exchange(ctx, as("stranger"), ts.URL, "group-1", stranger, NewAcceptor("stranger")); err == nil {
+	if _, _, err := Exchange(ctx, as("stranger"), ts.URL, "group-1", stranger, NewAcceptor("stranger")); err == nil {
 		t.Fatal("a non-member must get nothing")
 	}
 	other, _ := NewOffer("juniper", "cedar", []netip.AddrPort{walnutOutside}, time.Now())
-	if _, err := Exchange(ctx, as("juniper"), ts.URL, "group-2", other, NewAcceptor("juniper")); err == nil {
+	if _, _, err := Exchange(ctx, as("juniper"), ts.URL, "group-2", other, NewAcceptor("juniper")); err == nil {
 		t.Fatal("another group's route must answer nothing")
 	}
 	spoofed, _ := NewOffer("walnut", "cedar", []netip.AddrPort{walnutOutside}, time.Now())
-	if _, err := Exchange(ctx, as("juniper"), ts.URL, "group-1", spoofed, NewAcceptor("juniper")); err == nil {
+	if _, _, err := Exchange(ctx, as("juniper"), ts.URL, "group-1", spoofed, NewAcceptor("juniper")); err == nil {
 		t.Fatal("a member must not offer on another member's behalf")
 	}
 }
@@ -152,7 +152,7 @@ func TestAnswersAreCheckedLikeOffers(t *testing.T) {
 	answers := map[string]Offer{}
 	answers["impostor"], _ = NewOffer("juniper", "walnut", []netip.AddrPort{cedarOutside}, now)
 	answers["misaddressed"], _ = NewOffer("cedar", "juniper", []netip.AddrPort{cedarOutside}, now)
-	stale, _ := NewOffer("cedar", "walnut", []netip.AddrPort{cedarOutside}, now.Add(-time.Minute))
+	stale, _ := NewOffer("cedar", "walnut", []netip.AddrPort{cedarOutside}, now.Add(-OfferLifetime-clockSkew-time.Second))
 	answers["stale"] = stale
 	for name, answer := range answers {
 		ts := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
@@ -160,9 +160,43 @@ func TestAnswersAreCheckedLikeOffers(t *testing.T) {
 			json.NewEncoder(response).Encode(answer)
 		}))
 		offer, _ := NewOffer("walnut", "cedar", []netip.AddrPort{walnutOutside}, now)
-		if _, err := Exchange(context.Background(), ts.Client(), ts.URL, "group-1", offer, NewAcceptor("walnut")); err == nil {
+		if _, _, err := Exchange(context.Background(), ts.Client(), ts.URL, "group-1", offer, NewAcceptor("walnut")); err == nil {
 			t.Errorf("a %s answer was accepted", name)
 		}
 		ts.Close()
+	}
+}
+
+// C-NT-4: the punch starts at one instant on both sides even when the
+// nodes' clocks disagree, because the caller converts the answer's start
+// time by the clock difference it measures over the exchange.
+func TestThePunchStartsTogetherDespiteClockDifference(t *testing.T) {
+	for _, skew := range []time.Duration{0, 7 * time.Second, -40 * time.Second} {
+		cedar := NewAcceptor("cedar")
+		cedar.now = func() time.Time { return time.Now().Add(skew) } // cedar's clock is off
+		var cedarStart time.Time
+		server := &Server{
+			GroupID: "group-1", Acceptor: cedar,
+			Caller:   func(*http.Request) (string, bool) { return "walnut", true },
+			Answer:   func(context.Context, string) ([]netip.AddrPort, error) { return []netip.AddrPort{cedarOutside}, nil },
+			Accepted: func(_ Offer, start time.Time) { cedarStart = start },
+		}
+		members := http.NewServeMux()
+		server.Register(nil, members)
+		ts := httptest.NewServer(members)
+		offer, _ := NewOffer("walnut", "cedar", []netip.AddrPort{walnutOutside}, time.Now())
+		_, walnutStart, err := Exchange(context.Background(), ts.Client(), ts.URL, "group-1", offer, NewAcceptor("walnut"))
+		ts.Close()
+		if err != nil {
+			t.Fatalf("skew %v: %v", skew, err)
+		}
+		// cedarStart is on cedar's clock; bring it to real time to compare.
+		gap := walnutStart.Sub(cedarStart.Add(-skew))
+		if gap < -20*time.Millisecond || gap > 20*time.Millisecond {
+			t.Fatalf("skew %v: the two starts differ by %v", skew, gap)
+		}
+		if until := time.Until(walnutStart); until < StartLead/2 || until > StartLead {
+			t.Fatalf("skew %v: the start is %v away, want about %v", skew, until, StartLead)
+		}
 	}
 }

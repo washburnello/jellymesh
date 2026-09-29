@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"net/netip"
 	"sync"
 	"time"
@@ -25,8 +26,18 @@ import (
 // once, so an offer older than this is stale or replayed.
 const OfferLifetime = 20 * time.Second
 
-// clockSkew tolerates members' clocks disagreeing slightly.
-const clockSkew = 5 * time.Second
+// clockSkew tolerates members' clocks disagreeing. Home servers' clocks
+// can be off by seconds; the TLS connection and the nonce, not the expiry,
+// are what stop a replay.
+const clockSkew = 60 * time.Second
+
+// StartLead is how far ahead the answering node schedules the punch. Both
+// sides must start sending within much less than the one-way delay between
+// them: a common NAT (Linux conntrack) records a peer's packet that arrives
+// before its own node has sent anything, then moves that node's outgoing
+// packets to another port, and the punch fails (NAT lab, #54). The lead
+// covers the answer's trip back to the caller.
+const StartLead = 500 * time.Millisecond
 
 // maxCandidates bounds the addresses an offer may name. Punching sends UDP
 // to each of them, so a member must not be able to aim it at many hosts.
@@ -47,6 +58,12 @@ type Offer struct {
 	Candidates []netip.AddrPort `json:"candidates"`
 	Nonce      string           `json:"nonce"`
 	Expires    time.Time        `json:"expires"`
+	// Sent is the sender's clock when it made the offer. An answer's Sent
+	// lets the caller estimate how far the two clocks differ.
+	Sent time.Time `json:"sent"`
+	// Start, in an answer, is when both sides begin punching, by the
+	// answering node's clock.
+	Start time.Time `json:"start,omitempty"`
 }
 
 // NewOffer builds an offer from one node to another, valid for
@@ -56,7 +73,7 @@ func NewOffer(from string, to string, candidates []netip.AddrPort, now time.Time
 	if _, err := rand.Read(nonce); err != nil {
 		return Offer{}, err
 	}
-	return Offer{From: from, To: to, Candidates: candidates, Nonce: hex.EncodeToString(nonce), Expires: now.Add(OfferLifetime)}, nil
+	return Offer{From: from, To: to, Candidates: candidates, Nonce: hex.EncodeToString(nonce), Expires: now.Add(OfferLifetime), Sent: now}, nil
 }
 
 // Acceptor checks offers arriving for one node and remembers their nonces
@@ -82,7 +99,7 @@ func (acceptor *Acceptor) Accept(caller string, offer Offer) error {
 		return ErrOfferForAnotherPair
 	}
 	now := acceptor.now()
-	if !now.Before(offer.Expires) || offer.Expires.After(now.Add(OfferLifetime+clockSkew)) {
+	if !now.Add(-clockSkew).Before(offer.Expires) || offer.Expires.After(now.Add(OfferLifetime+clockSkew)) {
 		return ErrOfferExpired
 	}
 	if err := checkCandidates(offer.Candidates); err != nil {
@@ -131,8 +148,9 @@ type Server struct {
 	Caller func(*http.Request) (string, bool)
 	// Answer returns this node's candidates for a peer.
 	Answer func(ctx context.Context, peer string) ([]netip.AddrPort, error)
-	// Accepted is told of each accepted offer, so punching can begin.
-	Accepted func(offer Offer)
+	// Accepted is told of each accepted offer and when, by this node's
+	// clock, punching begins.
+	Accepted func(offer Offer, start time.Time)
 }
 
 // Register adds the offer route for members only.
@@ -162,13 +180,15 @@ func (server *Server) offer(response http.ResponseWriter, request *http.Request)
 		http.Error(response, "no path available", http.StatusServiceUnavailable)
 		return
 	}
-	answer, err := NewOffer(server.Acceptor.self, caller, candidates, server.Acceptor.now())
+	now := server.Acceptor.now()
+	answer, err := NewOffer(server.Acceptor.self, caller, candidates, now)
 	if err != nil {
 		http.Error(response, "no path available", http.StatusServiceUnavailable)
 		return
 	}
+	answer.Start = now.Add(StartLead)
 	if server.Accepted != nil {
-		server.Accepted(offer)
+		server.Accepted(offer, answer.Start)
 	}
 	response.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(response).Encode(answer)
@@ -176,35 +196,61 @@ func (server *Server) offer(response http.ResponseWriter, request *http.Request)
 
 // Exchange sends offer to the peer at baseURL over client, which must be
 // the mutually authenticated connection to that peer, and returns the
-// peer's answer once it has passed the same checks as an incoming offer.
-func Exchange(ctx context.Context, client *http.Client, baseURL string, groupID string, offer Offer, acceptor *Acceptor) (Offer, error) {
+// peer's answer once it has passed the same checks as an incoming offer,
+// with the punch's start converted to this node's clock. The clocks are
+// compared as NTP does: the peer's clock when it answered, against the
+// midpoint of the request's round trip here, so neither node needs an
+// accurate clock.
+func Exchange(ctx context.Context, client *http.Client, baseURL string, groupID string, offer Offer, acceptor *Acceptor) (Offer, time.Time, error) {
 	body, err := json.Marshal(offer)
 	if err != nil {
-		return Offer{}, err
+		return Offer{}, time.Time{}, err
 	}
 	url := baseURL + "/jellymesh/v1/groups/" + groupID + "/path/offer"
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return Offer{}, err
+		return Offer{}, time.Time{}, err
 	}
 	request.Header.Set("Content-Type", "application/json")
+	// Time only the request's own round trip: from the moment it has been
+	// written to the first byte of the answer. Connection setup (TCP, TLS)
+	// happens before that and would skew the clock estimate by its round
+	// trips, which is enough to lose the punch (NAT lab, #54).
+	var sent, firstByte time.Time
+	request = request.WithContext(httptrace.WithClientTrace(request.Context(), &httptrace.ClientTrace{
+		WroteRequest:         func(httptrace.WroteRequestInfo) { sent = time.Now() },
+		GotFirstResponseByte: func() { firstByte = time.Now() },
+	}))
 	response, err := client.Do(request)
 	if err != nil {
-		return Offer{}, err
+		return Offer{}, time.Time{}, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		message, _ := io.ReadAll(io.LimitReader(response.Body, 512))
-		return Offer{}, fmt.Errorf("the peer refused the offer: %d %s", response.StatusCode, bytes.TrimSpace(message))
+		return Offer{}, time.Time{}, fmt.Errorf("the peer refused the offer: %d %s", response.StatusCode, bytes.TrimSpace(message))
 	}
 	var answer Offer
 	decoder := json.NewDecoder(io.LimitReader(response.Body, 16<<10))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&answer); err != nil {
-		return Offer{}, fmt.Errorf("malformed answer: %w", err)
+		return Offer{}, time.Time{}, fmt.Errorf("malformed answer: %w", err)
+	}
+	received := time.Now()
+	if sent.IsZero() || firstByte.IsZero() {
+		sent, firstByte = received, received
 	}
 	if err := acceptor.Accept(offer.To, answer); err != nil {
-		return Offer{}, err
+		return Offer{}, time.Time{}, err
 	}
-	return answer, nil
+	if answer.Start.IsZero() || answer.Start.Before(answer.Sent) || answer.Start.After(answer.Sent.Add(OfferLifetime)) {
+		return Offer{}, time.Time{}, fmt.Errorf("%w: no usable start time", ErrOfferInvalid)
+	}
+	// The peer's clock minus this one's, at the round trip's midpoint.
+	offset := answer.Sent.Sub(sent.Add(firstByte.Sub(sent) / 2))
+	start := answer.Start.Add(-offset)
+	if start.Before(received) {
+		start = received // the round trip outlasted the lead; start now
+	}
+	return answer, start, nil
 }

@@ -582,7 +582,16 @@ film-sized streams. When one node needs media from another:
    The offers are bound to that mutually authenticated connection and expire
    within seconds.
 3. Both send UDP packets to the other's addresses at once. Each router sees
-   outgoing traffic and admits the peer's replies: the hole punch.
+   outgoing traffic and admits the peer's replies: the hole punch. "At once"
+   is strict. Linux conntrack NAT, common in home routers, records a peer's
+   packet that arrives before its own node has sent anything, then moves
+   that node's outgoing packets to another port, so the punch fails (NAT
+   lab, M-13). The answer therefore carries a start time half a second
+   ahead, by the answering node's clock. The caller converts it to its own
+   clock using the clock difference it measures over the request's round
+   trip, timed from the request being written to the first byte of the
+   answer so that connection setup does not skew it. Both then start within
+   well under the one-way delay between homes.
 4. A QUIC connection opens over that path, with the same node certificates
    and pinned fingerprints as the TCP transport, and media requests run over
    HTTP/3 on it. The source still authorizes every request; ranges, HEAD,
