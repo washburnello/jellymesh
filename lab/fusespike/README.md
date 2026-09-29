@@ -66,12 +66,11 @@ In all five, no item was lost and every watched state was kept. Jellyfin treats 
 
 FUSE reports the real file size (1.47 GB against 86 B for a `.strm`) and full media information before playback.
 
-**G4, every app plays: PASS for the devices that matter; the rest is still to test.** 2026-09-29, the user, against the spike's Jellyfin at `http://192.168.87.20:18130`:
+**G4, every app plays: PASS on every available device.** Android and Android TV are deferred (no devices; tracked in #42). 2026-09-29, the user, against the spike's Jellyfin at `http://192.168.87.20:18130`:
 
 - **Roku played a FUSE film**, on the Hisense 50R6+ running Jellyfin Roku 3.2.3 whose `.strm` playback failed (M-1). So did iPhone, iPad, and Walnut's browser.
 - Playback, progress tracking, and resume all worked.
 - Subtitle switching worked on the Roku.
-- Not yet tested: Android or Android TV.
 
 The films are the spike's test data: synthetic "Added"/"Spike Film" entries, and the three real films with bare NFOs and no artwork. Real Jellymesh carries each film's NFO, poster, and subtitles, as it does for `.strm` today.
 
