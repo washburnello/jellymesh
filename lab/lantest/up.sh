@@ -73,8 +73,9 @@ report "walnut Jellyfin films with a TMDB identifier" "$n"
 
 # --- the nodes ----------------------------------------------------------------
 docker run -d --name jm-lan-walnut --restart unless-stopped --network jm-lan -v jm-lan-walnut-data:/data \
-  -p "$walnut_ip:18443:8443" \
+  -p "$walnut_ip:18443:8443" -p "$walnut_ip:44843:44843/udp" \
   -e JELLYMESH_NODE_NAME=walnut -e JELLYMESH_PUBLIC_HOSTNAME="$walnut_ip:18443" \
+  -e JELLYMESH_DIRECT_CANDIDATES="$walnut_ip:44843" \
   -e JELLYMESH_JELLYFIN_URL=http://jm-lan-jellyfin:8096 -e JELLYMESH_JELLYFIN_USER=jellymesh -e JELLYMESH_JELLYFIN_PASSWORD="$service_password" \
   jellymesh:lan >/dev/null
 ssh "$cedar" "sudo mkdir -p '$cedar_generated/Movies' && sudo chown -R 65532:65532 '$cedar_generated' && sudo chmod 0755 '$cedar_generated' '$cedar_generated/Movies'
@@ -83,6 +84,7 @@ ssh "$cedar" "sudo mkdir -p '$cedar_generated/Movies' && sudo chown -R 65532:655
     -e JELLYMESH_FEDERATION_LISTEN_ADDR='$cedar_ip:18443' -e JELLYMESH_ADMIN_LISTEN_ADDR=127.0.0.1:18191 \
     -e JELLYMESH_RELAY_LISTEN_ADDR=127.0.0.1:18190 -e JELLYMESH_RELAY_URL=http://127.0.0.1:18190 \
     -e JELLYMESH_GENERATED_ROOT=/generated -e JELLYMESH_JELLYFIN_GENERATED_ROOT=/media/jellymesh-test \
+    -e JELLYMESH_DIRECT_CANDIDATES='$cedar_ip:44843' \
     jellymesh:lan >/dev/null"
 walnut_jm() { docker exec jm-lan-walnut /jellymesh "$@"; }
 cedar_jm() { ssh "$cedar" docker exec jm-lan-cedar /jellymesh "$@"; }

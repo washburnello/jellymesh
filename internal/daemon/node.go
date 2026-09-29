@@ -591,12 +591,21 @@ func (n *Node) Run(ctx context.Context, federationListener net.Listener, interva
 	errs := make(chan error, 1)
 	if n.direct != nil {
 		go func() {
-			for {
-				n.direct.discover(ctx)
+			// A failed discovery is retried soon: the first, at start-up,
+			// can fail while a container's published port is still being
+			// set up (seen on walnut's LAN test).
+			retries := []time.Duration{30 * time.Second, 2 * time.Minute}
+			for attempt := 0; ; attempt++ {
+				wait := discoveryInterval
+				if !n.direct.discover(ctx) && attempt < len(retries) {
+					wait = retries[attempt]
+				} else if attempt >= len(retries) {
+					attempt = len(retries)
+				}
 				select {
 				case <-ctx.Done():
 					return
-				case <-time.After(discoveryInterval):
+				case <-time.After(wait):
 				}
 			}
 		}()

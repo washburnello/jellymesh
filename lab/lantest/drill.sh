@@ -28,8 +28,9 @@ cedar_jm() { ssh "$cedar" docker exec jm-lan-cedar /jellymesh "$@"; }
 start_walnut() { # volume
   docker rm -f jm-lan-walnut >/dev/null 2>&1 || true
   docker run -d --name jm-lan-walnut --restart unless-stopped --network jm-lan -v "$1:/data" \
-    -p "$walnut_ip:18443:8443" \
+    -p "$walnut_ip:18443:8443" -p "$walnut_ip:44843:44843/udp" \
     -e JELLYMESH_NODE_NAME=walnut -e JELLYMESH_PUBLIC_HOSTNAME="$walnut_ip:18443" \
+    -e JELLYMESH_DIRECT_CANDIDATES="$walnut_ip:44843" \
     -e JELLYMESH_JELLYFIN_URL=http://jm-lan-jellyfin:8096 -e JELLYMESH_JELLYFIN_USER=jellymesh -e JELLYMESH_JELLYFIN_PASSWORD="$service_password" \
     jellymesh:lan >/dev/null
   for _ in $(seq 1 30); do walnut_jm status >/dev/null 2>&1 && return; sleep 1; done

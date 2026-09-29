@@ -60,6 +60,8 @@ func main() {
 		stun(os.Args[2:])
 	case "node":
 		runNode(os.Args[2:])
+	case "stunprobe":
+		stunProbe(os.Args[2:])
 	default:
 		log.Fatalf("unknown command %q", os.Args[1])
 	}
@@ -101,6 +103,42 @@ func stun(args []string) {
 		}
 		conn.WriteTo(response, from)
 	}
+}
+
+// stunProbe runs one STUN discovery from a UDP socket and prints the
+// result, to diagnose a node whose discovery fails.
+func stunProbe(args []string) {
+	flags := flag.NewFlagSet("stunprobe", flag.ExitOnError)
+	listen := flags.String("listen", "0.0.0.0:0", "local UDP address")
+	servers := flags.String("stun", "stun.l.google.com:19302,stun.cloudflare.com:3478", "STUN servers")
+	useEndpoint := flags.Bool("endpoint", false, "use a natpath.Endpoint (QUIC and STUN on one socket), as the daemon does")
+	flags.Parse(args)
+	if *useEndpoint {
+		dir, _ := os.MkdirTemp("", "probe")
+		id, err := node.LoadOrCreate(filepath.Join(dir, "node.key"), filepath.Join(dir, "node.crt"), "probe")
+		if err != nil {
+			log.Fatal(err)
+		}
+		endpoint, err := natpath.Listen(*listen, id.TLSCertificate())
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer endpoint.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		result, err := endpoint.Discover(ctx, splitList(*servers))
+		fmt.Printf("endpoint %s -> %+v, error %v\n", endpoint.LocalAddr(), result, err)
+		return
+	}
+	conn, err := net.ListenPacket("udp4", *listen)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer conn.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result, err := natpath.Discover(ctx, conn, splitList(*servers))
+	fmt.Printf("local %s -> %+v, error %v\n", conn.LocalAddr(), result, err)
 }
 
 func runNode(args []string) {

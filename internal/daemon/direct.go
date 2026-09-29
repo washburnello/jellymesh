@@ -90,10 +90,11 @@ func (direct *directPaths) close() {
 	}
 }
 
-// discover refreshes this node's outside address.
-func (direct *directPaths) discover(ctx context.Context) {
+// discover refreshes this node's outside address, and reports whether it
+// learned one.
+func (direct *directPaths) discover(ctx context.Context) bool {
 	if direct.node.cfg.DirectOfferLocal {
-		return // local candidates only; no STUN
+		return true // local candidates only; no STUN
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -104,6 +105,7 @@ func (direct *directPaths) discover(ctx context.Context) {
 	if err != nil {
 		direct.node.logger.Printf("direct paths: STUN: %v", err)
 	}
+	return err == nil
 }
 
 // candidates are the addresses this node offers: its outside address, when

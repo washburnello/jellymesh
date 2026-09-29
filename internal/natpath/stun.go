@@ -187,9 +187,14 @@ func discover(ctx context.Context, send func([]byte, net.Addr) error, receive fu
 	}
 	var queries []query
 	for _, server := range servers {
-		resolved, err := net.DefaultResolver.LookupNetIP(ctx, "ip", hostOf(server))
+		// IPv4 first: the outside addresses offered to peers are IPv4, and a
+		// host with no IPv6 route (common, including Docker's default
+		// networks) cannot send to a server's IPv6 address at all.
+		resolved, err := net.DefaultResolver.LookupNetIP(ctx, "ip4", hostOf(server))
 		if err != nil || len(resolved) == 0 {
-			continue
+			if resolved, err = net.DefaultResolver.LookupNetIP(ctx, "ip", hostOf(server)); err != nil || len(resolved) == 0 {
+				continue
+			}
 		}
 		port, err := portOf(server)
 		if err != nil {
