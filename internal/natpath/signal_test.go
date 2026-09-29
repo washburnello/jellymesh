@@ -200,3 +200,38 @@ func TestThePunchStartsTogetherDespiteClockDifference(t *testing.T) {
 		}
 	}
 }
+
+// #55: a member may not set off punching at will: a second offer within
+// MinOfferInterval is refused, and one after it is accepted.
+func TestAMemberMayNotOfferTooOften(t *testing.T) {
+	now := time.Now()
+	cedar := NewAcceptor("cedar")
+	fixedClock(cedar, now)
+	var refused []error
+	server := &Server{
+		GroupID: "group-1", Acceptor: cedar,
+		Caller:  func(*http.Request) (string, bool) { return "walnut", true },
+		Answer:  func(context.Context, string) ([]netip.AddrPort, error) { return []netip.AddrPort{cedarOutside}, nil },
+		Refused: func(_ string, err error) { refused = append(refused, err) },
+	}
+	members := http.NewServeMux()
+	server.Register(nil, members)
+	ts := httptest.NewServer(members)
+	defer ts.Close()
+	offer := func() error {
+		o, _ := NewOffer("walnut", "cedar", []netip.AddrPort{walnutOutside}, now)
+		_, _, err := Exchange(context.Background(), ts.Client(), ts.URL, "group-1", o, NewAcceptor("walnut"))
+		return err
+	}
+	// The answer's clock is fixed; the caller's check tolerates that.
+	if err := offer(); err != nil {
+		t.Fatalf("a first offer: %v", err)
+	}
+	if err := offer(); err == nil || len(refused) != 1 || !errors.Is(refused[0], ErrOfferTooSoon) {
+		t.Fatalf("a second offer within the interval must be refused: %v, %v", err, refused)
+	}
+	fixedClock(cedar, now.Add(MinOfferInterval))
+	if err := offer(); err != nil {
+		t.Fatalf("an offer after the interval: %v", err)
+	}
+}

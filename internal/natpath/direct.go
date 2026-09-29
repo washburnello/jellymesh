@@ -32,6 +32,7 @@ const (
 var (
 	ErrNotExpected = errors.New("no direct connection from this peer is expected")
 	ErrNoPath      = errors.New("no direct path could be opened")
+	errNotFromPeer = errors.New("no direct connection is expected from this address")
 )
 
 func quicConfig() *quic.Config {
@@ -53,10 +54,17 @@ type Endpoint struct {
 	cert      tls.Certificate
 
 	mutex     sync.Mutex
-	expecting map[node.Fingerprint]chan *quic.Conn
+	expecting map[node.Fingerprint]expectation
 	stun      chan datagram
 
 	closed chan struct{}
+}
+
+// expectation is one peer this endpoint will accept, from the addresses it
+// offered.
+type expectation struct {
+	waiter chan *quic.Conn
+	from   []netip.AddrPort
 }
 
 type datagram struct {
@@ -76,11 +84,20 @@ func Listen(address string, cert tls.Certificate) (*Endpoint, error) {
 		return nil, err
 	}
 	endpoint := &Endpoint{
-		conn: conn, transport: &quic.Transport{Conn: conn}, cert: cert,
-		expecting: map[node.Fingerprint]chan *quic.Conn{},
+		conn: conn, cert: cert,
+		expecting: map[node.Fingerprint]expectation{},
 		stun:      make(chan datagram, 64),
 		closed:    make(chan struct{}),
 	}
+	// A connection attempt from an address no accepted offer named is
+	// refused before any cryptography, so a flood of them costs little.
+	// The pinned key is checked after that, in the handshake.
+	endpoint.transport = &quic.Transport{Conn: conn, ConnContext: func(ctx context.Context, info *quic.ClientInfo) (context.Context, error) {
+		if !endpoint.expectedFrom(info.RemoteAddr) {
+			return ctx, errNotFromPeer
+		}
+		return ctx, nil
+	}}
 	server := &tls.Config{
 		MinVersion:            tls.VersionTLS13,
 		Certificates:          []tls.Certificate{cert},
@@ -123,6 +140,23 @@ func (endpoint *Endpoint) Close() error {
 	return endpoint.conn.Close()
 }
 
+func (endpoint *Endpoint) expectedFrom(remote net.Addr) bool {
+	address, ok := addrPortOf(remote)
+	if !ok {
+		return false
+	}
+	endpoint.mutex.Lock()
+	defer endpoint.mutex.Unlock()
+	for _, expected := range endpoint.expecting {
+		for _, from := range expected.from {
+			if from == address {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // verifyExpected admits a connecting peer only if a connection from its key
 // is expected: one whose offer this node has just accepted.
 func (endpoint *Endpoint) verifyExpected(rawCerts [][]byte, _ [][]*x509.Certificate) error {
@@ -155,14 +189,14 @@ func (endpoint *Endpoint) accept() {
 		state := conn.ConnectionState().TLS
 		fingerprint, err := transport.PeerFingerprint(state)
 		endpoint.mutex.Lock()
-		waiter, ok := endpoint.expecting[fingerprint]
+		expected, ok := endpoint.expecting[fingerprint]
 		endpoint.mutex.Unlock()
 		if err != nil || !ok {
 			conn.CloseWithError(1, "not expected")
 			continue
 		}
 		select {
-		case waiter <- conn:
+		case expected.waiter <- conn:
 		default:
 			conn.CloseWithError(1, "already connected")
 		}
@@ -203,17 +237,18 @@ func (endpoint *Endpoint) Discover(ctx context.Context, servers []string) (Resul
 	return discover(ctx, send, receive, servers)
 }
 
-// Expect admits one direct connection from peer, and returns a function
-// that waits for it. The expectation lapses when ctx ends.
-func (endpoint *Endpoint) Expect(ctx context.Context, peer node.Fingerprint) func() (*quic.Conn, error) {
+// Expect admits one direct connection from peer's key, arriving from one of
+// the addresses it offered, and returns a function that waits for it. The
+// expectation lapses when ctx ends.
+func (endpoint *Endpoint) Expect(ctx context.Context, peer node.Fingerprint, from []netip.AddrPort) func() (*quic.Conn, error) {
 	waiter := make(chan *quic.Conn, 1)
 	endpoint.mutex.Lock()
-	endpoint.expecting[peer] = waiter
+	endpoint.expecting[peer] = expectation{waiter: waiter, from: from}
 	endpoint.mutex.Unlock()
 	return func() (*quic.Conn, error) {
 		defer func() {
 			endpoint.mutex.Lock()
-			if endpoint.expecting[peer] == waiter {
+			if endpoint.expecting[peer].waiter == waiter {
 				delete(endpoint.expecting, peer)
 			}
 			endpoint.mutex.Unlock()

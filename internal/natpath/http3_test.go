@@ -21,7 +21,7 @@ func connected(t *testing.T, handler http.Handler) (*http.Client, *node.Identity
 	cedarID, walnutID := identity(t, "cedar"), identity(t, "walnut")
 	cedar, walnut := endpoint(t, cedarID), endpoint(t, walnutID)
 	ctx := within(t, 10*time.Second)
-	wait := cedar.Expect(ctx, walnutID.Fingerprint())
+	wait := cedar.Expect(ctx, walnutID.Fingerprint(), []netip.AddrPort{walnut.LocalAddr()})
 	dialed, err := walnut.Dial(ctx, cedarID.Fingerprint(), []netip.AddrPort{cedar.LocalAddr()})
 	if err != nil {
 		t.Fatal(err)

@@ -49,6 +49,9 @@ type directPaths struct {
 
 	// served counts media requests this node answered over direct paths.
 	served atomic.Int64
+
+	// offerInterval overrides natpath.MinOfferInterval, for tests.
+	offerInterval time.Duration
 }
 
 type peerPath struct {
@@ -159,6 +162,10 @@ func (direct *directPaths) offerRoutes(runtime *groupRuntime) *natpath.Server {
 		Caller:   func(request *http.Request) (string, bool) { return direct.memberByKey(runtime, request) },
 		Answer:   func(context.Context, string) ([]netip.AddrPort, error) { return direct.candidates() },
 		Accepted: func(offer natpath.Offer, start time.Time) { go direct.answer(runtime, offer, start) },
+		Refused: func(caller string, err error) {
+			direct.node.audit.Record(context.Background(), caller, "direct_path_refused", caller, map[string]string{"node_id": caller, "reason": err.Error()})
+		},
+		Interval: direct.offerInterval,
 	}
 }
 
@@ -171,13 +178,15 @@ func (direct *directPaths) answer(runtime *groupRuntime, offer natpath.Offer, st
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), attemptTimeout)
 	defer cancel()
-	wait := direct.endpoint.Expect(ctx, peer.Fingerprint)
+	wait := direct.endpoint.Expect(ctx, peer.Fingerprint, offer.Candidates)
 	time.Sleep(time.Until(start))
 	go direct.endpoint.Punch(ctx, offer.Candidates)
 	conn, err := wait()
 	if err != nil {
+		direct.record("direct_path_failed", offer.From, "answered", err)
 		return
 	}
+	direct.record("direct_path_opened", offer.From, "answered", nil)
 	handler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		direct.served.Add(1)
 		direct.node.FederationHandler().ServeHTTP(response, request)
@@ -225,8 +234,23 @@ func (direct *directPaths) failed(peerID string, err error) {
 	}
 }
 
+// record audits a direct path's outcome, with no address: identifiers and
+// outcomes only, as C-OP-1 requires.
+func (direct *directPaths) record(action string, peerID string, outcome string, err error) {
+	detail := map[string]string{"node_id": peerID, "outcome": outcome}
+	if err != nil {
+		detail["reason"] = err.Error()
+	}
+	direct.node.audit.Record(context.Background(), "local", action, peerID, detail)
+}
+
 func (direct *directPaths) attempt(peerID string) {
 	err := direct.open(peerID)
+	if err != nil {
+		direct.record("direct_path_failed", peerID, "dialed", err)
+	} else {
+		direct.record("direct_path_opened", peerID, "dialed", nil)
+	}
 	direct.mutex.Lock()
 	defer direct.mutex.Unlock()
 	path := direct.peers[peerID]

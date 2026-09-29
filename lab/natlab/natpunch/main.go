@@ -195,7 +195,7 @@ func runNode(args []string) {
 			result.Error = "no offer arrived"
 			return
 		}
-		wait := endpoint.Expect(ctx, theirs.Fingerprint)
+		wait := endpoint.Expect(ctx, theirs.Fingerprint, got.offer.Candidates)
 		time.Sleep(time.Until(got.start))
 		go endpoint.Punch(ctx, got.offer.Candidates)
 		conn, err := wait()

@@ -17,6 +17,7 @@ import (
 	"jellymesh/internal/jellyfin"
 	"jellymesh/internal/jellyfin/jellyfintest"
 	"jellymesh/internal/natpath"
+	"jellymesh/internal/store"
 )
 
 // failingReader yields data, then fails as a dropped direct path would.
@@ -133,6 +134,8 @@ func directPair(t *testing.T, cedarConfig func(*config.Config), walnutConfig fun
 	cedar = startDaemonWith(t, "cedar", t.TempDir(), "127.0.0.1:0", withDirectPaths(combine(withServiceUser(cedarJellyfin), cedarConfig)))
 	walnutDir := t.TempDir()
 	walnut = startDaemonWith(t, "walnut", walnutDir, "127.0.0.1:0", withDirectPaths(combine(withServiceUser(walnutJellyfin), walnutConfig)))
+	// These tests re-offer quickly on purpose; natpath tests the limit.
+	cedar.node.direct.offerInterval, walnut.node.direct.offerInterval = time.Millisecond, time.Millisecond
 	cedar.must(http.MethodPost, "/admin/v1/group", FoundRequest{GroupID: "group-1"}, nil)
 	cedar.must(http.MethodPost, "/admin/v1/publications", PublishRequest{LibraryID: "lib-movies", Roots: []string{"/media/movies"}}, nil)
 	walnut.must(http.MethodPost, "/admin/v1/publications", PublishRequest{LibraryID: "lib-docs", Roots: []string{"/media/docs"}}, nil)
@@ -216,6 +219,31 @@ func TestMediaTakesTheDirectPathAndFallsBackToTCP(t *testing.T) {
 	walnut.waitForPath(t, cedar.node.NodeID(), "direct")
 
 	// The path drops: media carries on over TCP, and the node says so.
+	// Paths opening and failing are audited with identifiers and outcomes
+	// only: never an address. (The blocked member's offer never reaches the
+	// offer route, since the listener turns it away first, so it shows as
+	// walnut's failure.)
+	actions := map[string]bool{}
+	for _, d := range []*testDaemon{cedar, walnut} {
+		events, _ := store.NewAuditRepository(d.node.database).List(context.Background(), 1000)
+		for _, event := range events {
+			if !strings.HasPrefix(event.Action, "direct_path_") {
+				continue
+			}
+			actions[d.name+" "+event.Action+" "+event.Detail["outcome"]] = true
+			for key, value := range event.Detail {
+				if strings.Contains(value, "127.0.0.1") {
+					t.Fatalf("an audit event names an address (%s): %+v", key, event)
+				}
+			}
+		}
+	}
+	for _, want := range []string{"walnut direct_path_opened dialed", "cedar direct_path_opened answered", "walnut direct_path_failed dialed"} {
+		if !actions[want] {
+			t.Fatalf("missing audit event %q in %v", want, actions)
+		}
+	}
+
 	walnut.node.direct.closeAll()
 	if status, body := relayGet(t, relay, strmURL, "bytes=3000-3099"); status != http.StatusPartialContent || !bytes.Equal(body, media[3000:3100]) {
 		t.Fatalf("after the direct path dropped: %d, %d bytes", status, len(body))

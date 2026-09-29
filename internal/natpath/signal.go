@@ -49,7 +49,13 @@ var (
 	ErrOfferExpired        = errors.New("the offer has expired or claims too long a life")
 	ErrOfferReplayed       = errors.New("the offer has been seen before")
 	ErrOfferInvalid        = errors.New("the offer's candidates are not usable")
+	ErrOfferTooSoon        = errors.New("this member made an offer too recently")
 )
+
+// MinOfferInterval is the least time between two offers a node accepts from
+// one member. Each accepted offer sets off seconds of punching toward the
+// addresses it names, so a member must not be able to drive that at will.
+const MinOfferInterval = 10 * time.Second
 
 // Offer is one side's invitation to punch: where it may be reached.
 type Offer struct {
@@ -156,6 +162,13 @@ type Server struct {
 	// Accepted is told of each accepted offer and when, by this node's
 	// clock, punching begins.
 	Accepted func(offer Offer, start time.Time)
+	// Refused, if set, is told of each refused offer.
+	Refused func(caller string, err error)
+	// Interval overrides MinOfferInterval, for tests.
+	Interval time.Duration
+
+	mutex sync.Mutex
+	last  map[string]time.Time // caller -> when its last offer was accepted
 }
 
 // Register adds the offer route for members only.
@@ -176,16 +189,39 @@ func (server *Server) offer(response http.ResponseWriter, request *http.Request)
 		http.Error(response, "malformed offer", http.StatusBadRequest)
 		return
 	}
+	now := server.Acceptor.now()
+	server.mutex.Lock()
+	if server.last == nil {
+		server.last = map[string]time.Time{}
+	}
+	interval := server.Interval
+	if interval <= 0 {
+		interval = MinOfferInterval
+	}
+	if last, ok := server.last[caller]; ok && now.Sub(last) < interval {
+		server.mutex.Unlock()
+		if server.Refused != nil {
+			server.Refused(caller, ErrOfferTooSoon)
+		}
+		http.Error(response, ErrOfferTooSoon.Error(), http.StatusTooManyRequests)
+		return
+	}
+	server.mutex.Unlock()
 	if err := server.Acceptor.Accept(caller, offer); err != nil {
+		if server.Refused != nil {
+			server.Refused(caller, err)
+		}
 		http.Error(response, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
+	server.mutex.Lock()
+	server.last[caller] = now
+	server.mutex.Unlock()
 	candidates, err := server.Answer(request.Context(), caller)
 	if err != nil {
 		http.Error(response, "no path available", http.StatusServiceUnavailable)
 		return
 	}
-	now := server.Acceptor.now()
 	answer, err := NewOffer(server.Acceptor.self, caller, candidates, now)
 	if err != nil {
 		http.Error(response, "no path available", http.StatusServiceUnavailable)

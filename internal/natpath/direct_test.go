@@ -49,7 +49,7 @@ func TestADirectConnectionUsesThePinnedKeys(t *testing.T) {
 	cedar, walnut := endpoint(t, cedarID), endpoint(t, walnutID)
 	ctx := within(t, 10*time.Second)
 
-	wait := cedar.Expect(ctx, walnutID.Fingerprint())
+	wait := cedar.Expect(ctx, walnutID.Fingerprint(), []netip.AddrPort{walnut.LocalAddr()})
 	go cedar.Punch(ctx, []netip.AddrPort{walnut.LocalAddr()})
 	dialed, err := walnut.Dial(ctx, cedarID.Fingerprint(), []netip.AddrPort{cedar.LocalAddr()})
 	if err != nil {
@@ -93,17 +93,18 @@ func TestADirectConnectionRefusesTheWrongKey(t *testing.T) {
 	cedar, walnut, stranger := endpoint(t, cedarID), endpoint(t, walnutID), endpoint(t, strangerID)
 	ctx := within(t, 20*time.Second)
 
-	cedar.Expect(ctx, walnutID.Fingerprint())
 	// walnut expects cedar but reaches the stranger's address.
-	strangerWait := stranger.Expect(ctx, walnutID.Fingerprint())
+	strangerWait := stranger.Expect(ctx, walnutID.Fingerprint(), []netip.AddrPort{walnut.LocalAddr()})
 	if _, err := walnut.Dial(ctx, cedarID.Fingerprint(), []netip.AddrPort{stranger.LocalAddr()}); err == nil {
 		t.Fatal("a peer with the wrong key must be refused")
 	}
 	_ = strangerWait
 
-	// The stranger dials cedar, which expects only walnut. The refusal must
-	// come from the TLS handshake itself (a crypto error), not merely from
-	// closing the connection after it was accepted.
+	// cedar expects walnut, but from the stranger's address, as if an
+	// attacker held walnut's address: the key must still be refused, in the
+	// TLS handshake itself (a crypto error), not merely by closing the
+	// connection after it was accepted.
+	cedar.Expect(ctx, walnutID.Fingerprint(), []netip.AddrPort{stranger.LocalAddr()})
 	conn, err := stranger.Dial(ctx, cedarID.Fingerprint(), []netip.AddrPort{cedar.LocalAddr()})
 	if err == nil {
 		// Under TLS 1.3 the client can finish before the server's refusal
@@ -135,7 +136,7 @@ func TestDiscoveryAndQUICShareOneSocket(t *testing.T) {
 		t.Fatalf("learned %v, want the endpoint's own socket %v", result.Address, cedar.LocalAddr())
 	}
 	ctx := within(t, 10*time.Second)
-	wait := cedar.Expect(ctx, walnutID.Fingerprint())
+	wait := cedar.Expect(ctx, walnutID.Fingerprint(), []netip.AddrPort{walnut.LocalAddr()})
 	if _, err := walnut.Dial(ctx, cedarID.Fingerprint(), []netip.AddrPort{cedar.LocalAddr()}); err != nil {
 		t.Fatalf("QUIC after discovery: %v", err)
 	}
@@ -185,5 +186,20 @@ func TestPunchingIsBounded(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	if received.Load() == 0 {
 		t.Fatal("punch datagrams never arrived")
+	}
+}
+
+// C-NT-4 (#55): a connection attempt from an address no accepted offer
+// named is refused before any cryptography, even by the right key.
+func TestAConnectionFromAnUnofferedAddressIsRefusedEarly(t *testing.T) {
+	cedarID, walnutID := identity(t, "cedar"), identity(t, "walnut")
+	cedar, walnut := endpoint(t, cedarID), endpoint(t, walnutID)
+	ctx := within(t, 10*time.Second)
+	elsewhere := netip.MustParseAddrPort("127.0.0.1:9") // not walnut's socket
+	cedar.Expect(ctx, walnutID.Fingerprint(), []netip.AddrPort{elsewhere})
+	_, err := walnut.Dial(ctx, cedarID.Fingerprint(), []netip.AddrPort{cedar.LocalAddr()})
+	var transportError *quic.TransportError
+	if err == nil || (errors.As(err, &transportError) && transportError.ErrorCode.IsCryptoError()) {
+		t.Fatalf("an unoffered address must be refused before the handshake, got %v", err)
 	}
 }

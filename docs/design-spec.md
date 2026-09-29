@@ -624,6 +624,18 @@ same network. Playback never waits for a direct path:
 `jellymesh status` shows each peer's path. In a container, publish UDP
 41641 so that Docker's own NAT does not move the port.
 
+**Security of the UDP surface** (reviewed 2026-09-29, #55, C-NT-7):
+
+| Threat | Mitigation | Residual risk |
+|---|---|---|
+| Anyone on the internet sends QUIC to the UDP port | A connection attempt is refused before any cryptography unless an accepted offer named its source address. The handshake then requires the offering member's pinned key. `quic-go` limits a server's reply to three times what it has received before validation | Stray packets cost a lookup each; a volumetric flood is a network problem, as for any open port |
+| A member uses offers to aim punch traffic at others | An offer is accepted only from its authenticated sender. It names at most 8 ordinary unicast addresses (no loopback, link-local, multicast, or unspecified). Punching sends a 15-byte datagram every 100 ms for at most 5 s. One accepted offer per member per 10 s | A member can make this node send at most about 400 small datagrams per 10 s toward 8 addresses: negligible, and audited |
+| A member floods offers | The rate limit above, and each refusal is audited. The TLS listener, the roster, and the block list turn away non-members and blocked members first | None beyond the listener's own load |
+| Forged STUN answers set a wrong outside address | Answers are believed only from the server asked, for the transaction sent | An on-path attacker who sees the request can spoil punching; media then falls back to TCP (denial, not compromise) |
+| Offers disclose addresses | Offers go only to members, over their authenticated connection, and name the outside address members could see anyway, plus only configured LAN addresses | Members learn a peer's configured LAN address |
+| Audit leaks addresses | Direct-path events record node IDs, outcomes, and reasons only | None |
+| Replay of an offer | Nonces are remembered for the offer's life plus clock tolerance, and offers ride a TLS connection | None known |
+
 Not in the first cut: relaying signalling through a third member when
 neither node is reachable (the requirement above rules that case out),
 relaying media through a third member when punching fails at both ends, and
