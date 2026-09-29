@@ -19,7 +19,7 @@
 set -euo pipefail
 media=${1:?give the media directory walnut publishes}
 root=$(cd "$(dirname "$0")/../.." && pwd)
-walnut_ip=${WALNUT_IP:-192.168.87.249}
+walnut_ip=${WALNUT_IP:-192.168.87.20}  # walnut's Wi-Fi address; its wired one has no route of its own
 cedar_ip=${CEDAR_IP:-192.168.87.247}
 cedar=${CEDAR_HOST:-cedar}
 state="$HOME/.config/jellymesh-lantest"
