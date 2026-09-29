@@ -338,13 +338,13 @@
       "issue": 37
     },
     {
-      "title": "Public HTTPS from an external network without Tailscale (M-2/M-2a)",
+      "title": "Node reachable from an external network at its advertised address (M-2)",
       "labels": [
         "enhancement"
       ],
       "state": "open",
       "phase": "phase-5",
-      "body": "What's left: establish a reachable public address (guard against CGNAT in 100.64.0.0/10), then a domain, DNS, port forward, and certificate so federation works without Tailscale. Evidence: docs/conformance.md M-2, M-2a.",
+      "body": "Re-scoped 2026-09-29 by decision A-16: reachable at the advertised address by a router port forward or Tailscale Funnel in raw-TCP mode, pinned keys intact. See #45 and #48.",
       "issue": 38
     },
     {
