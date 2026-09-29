@@ -406,6 +406,151 @@
       "phase": "phase-6",
       "body": "What's left: management-surface heartbeat and offline detail, provider-health rendering in Jellyfin Web, a client-independent source avatar convention, and exploring direct client-to-provider playback. Evidence: docs/design-spec.md section 16 Phase 6.",
       "issue": 44
+    },
+    {
+      "title": "Direct peer connections: reachable addresses, hole-punched UDP media over QUIC (A-16)",
+      "labels": [
+        "feature",
+        "version:1.0"
+      ],
+      "phase": "phase-5",
+      "state": "open",
+      "body": "Every node advertises an address members can reach over TCP (router port forward, or Tailscale Funnel in raw-TCP mode). That address carries control traffic and arranges connections; media prefers a direct QUIC connection over a hole-punched UDP path, falling back to the advertised address when punching fails. No central matchmaker: the roster already holds every member's address.\n\nDone when C-NT-1 to C-NT-6 are PASS and M-2 and M-12 have been performed.\n\nDesign: docs/design-spec.md section 8, \"Reachability and direct media paths\"; decision A-16 in docs/conformance.md (58da01e).",
+      "children": [
+        {
+          "title": "Prototype: hole-punched QUIC transfer between two networks",
+          "body": "A throwaway lab tool (lab/punchcheck): each end learns its outside UDP address by STUN, the two exchange addresses over one side's advertised TCP address, punch, open QUIC, and time a transfer of a real film. Report punch success, time to connect, and sustained throughput, plus whether each NAT's mapping varies by destination.\n\nNeeds one end outside the home network (a laptop on a phone hotspot, or the pilot friend). Decides whether the design goes ahead unchanged.\n\nDesign: docs/design-spec.md section 8, \"Reachability and direct media paths\"; decision A-16 in docs/conformance.md (58da01e).",
+          "labels": [
+            "phase:phase-5",
+            "version:1.0",
+            "research",
+            "testing"
+          ]
+        },
+        {
+          "title": "Reachability requirement and join-time address check (C-NT-1)",
+          "body": "The approver's node dials the joiner's advertised address over mutual TLS and checks that the joiner's key answers there before signing the admission. Refuse clearly, naming the address, when it does not. Document the two accepted routes (port forward; Funnel raw TCP, never Funnel HTTPS).\n\nDesign: docs/design-spec.md section 8, \"Reachability and direct media paths\"; decision A-16 in docs/conformance.md (58da01e).",
+          "labels": [
+            "phase:phase-5",
+            "version:1.0",
+            "feature"
+          ]
+        },
+        {
+          "title": "Cedar: advertise through Funnel raw TCP on port 10000 (M-2)",
+          "body": "Funnel allows only 443, 8443 and 10000; 443 is FiveyTools and 8443 is the tailnet-only Kaneo, so use 10000: `tailscale funnel --bg --tcp 10000 tcp://localhost:18443`. Widen the node's federation listener to reach it, set JELLYMESH_PUBLIC_HOSTNAME=cedar.sungrazer-shade.ts.net:10000, and verify from an outside network that the pinned-key TLS handshake survives the passthrough. Needs the user's go-ahead, since it exposes the node to the internet.\n\nDesign: docs/design-spec.md section 8, \"Reachability and direct media paths\"; decision A-16 in docs/conformance.md (58da01e).",
+          "labels": [
+            "phase:phase-5",
+            "version:1.0",
+            "feature"
+          ]
+        },
+        {
+          "title": "STUN discovery on the QUIC socket and NAT-type detection (C-NT-2)",
+          "body": "Query public STUN servers (configurable list, e.g. Google and Cloudflare) on the same UDP socket the QUIC transport uses, multiplexing STUN with QUIC. Ask two servers to tell a destination-dependent mapping from an endpoint-independent one. Keep a fresh result and re-query on network change.\n\nDesign: docs/design-spec.md section 8, \"Reachability and direct media paths\"; decision A-16 in docs/conformance.md (58da01e).",
+          "labels": [
+            "phase:phase-5",
+            "version:1.0",
+            "feature"
+          ]
+        },
+        {
+          "title": "Signalling: authenticated direct-path offers (C-NT-3)",
+          "body": "Offer and answer messages carrying each side's candidates (the outside UDP address and LAN addresses), exchanged only over the mutually authenticated connection to the source's advertised address, bound to that pair, with a short expiry and a nonce. Refuse offers from non-members, for other pairs, or replayed late.\n\nDesign: docs/design-spec.md section 8, \"Reachability and direct media paths\"; decision A-16 in docs/conformance.md (58da01e).",
+          "labels": [
+            "phase:phase-5",
+            "version:1.0",
+            "feature",
+            "security"
+          ]
+        },
+        {
+          "title": "QUIC transport with pinned node keys and hole punching (C-NT-4)",
+          "body": "Add quic-go. QUIC uses the node's existing certificate, and peers are verified by fingerprint exactly as on TCP. Both ends send punch packets to each other's candidates at once, with retries and a deadline, then the destination dials. Keep-alives hold NAT mappings; one connection per peer is reused. A mismatched key is refused.\n\nDesign: docs/design-spec.md section 8, \"Reachability and direct media paths\"; decision A-16 in docs/conformance.md (58da01e).",
+          "labels": [
+            "phase:phase-5",
+            "version:1.0",
+            "feature",
+            "security"
+          ]
+        },
+        {
+          "title": "Media over the direct path with every relay guarantee (C-NT-5)",
+          "body": "The destination's relay fetches from the source over HTTP/3 on the punched connection. Ranges, HEAD, cancellation, the per-destination ceiling (C-PB-3), the head cache and its HEAD confirmation (C-PB-5), and per-request authorization by the source must behave exactly as over TCP. Bind the existing relay tests to both transports.\n\nDesign: docs/design-spec.md section 8, \"Reachability and direct media paths\"; decision A-16 in docs/conformance.md (58da01e).",
+          "labels": [
+            "phase:phase-5",
+            "version:1.0",
+            "feature"
+          ]
+        },
+        {
+          "title": "Fallback to the advertised address and per-peer path reporting (C-NT-6)",
+          "body": "When punching fails or the direct path drops mid-stream, continue over the advertised TCP address without an error reaching Jellyfin, and retry the direct path later. `jellymesh status` shows each peer's path (direct UDP, LAN, or fallback) and the node's NAT type.\n\nDesign: docs/design-spec.md section 8, \"Reachability and direct media paths\"; decision A-16 in docs/conformance.md (58da01e).",
+          "labels": [
+            "phase:phase-5",
+            "version:1.0",
+            "feature"
+          ]
+        },
+        {
+          "title": "Automated NAT lab for punching and fallback tests",
+          "body": "Docker topologies with Linux NAT (iptables MASQUERADE) emulating endpoint-independent and destination-dependent routers, including double NAT, so C-NT-4 and C-NT-6 are proven by repeatable tests, not only by manual runs.\n\nDesign: docs/design-spec.md section 8, \"Reachability and direct media paths\"; decision A-16 in docs/conformance.md (58da01e).",
+          "labels": [
+            "phase:phase-5",
+            "version:1.0",
+            "testing"
+          ]
+        },
+        {
+          "title": "Security review of the UDP surface",
+          "body": "Review the new exposure: unauthenticated packets reaching the QUIC socket, STUN spoofing, punch traffic used for amplification, signalling floods, and resource limits per peer. Add rate limits and audit events for direct-path setup and failures, with redaction as in C-OP-1.\n\nDesign: docs/design-spec.md section 8, \"Reachability and direct media paths\"; decision A-16 in docs/conformance.md (58da01e).",
+          "labels": [
+            "phase:phase-5",
+            "version:1.0",
+            "security"
+          ]
+        },
+        {
+          "title": "Real-world validation across two homes (M-12)",
+          "body": "cedar (via Funnel) and the pilot friend's node stream a film over a punched path; measure connect time and throughput; then force the fallback and confirm playback continues. Record results in conformance M-12.\n\nDesign: docs/design-spec.md section 8, \"Reachability and direct media paths\"; decision A-16 in docs/conformance.md (58da01e).",
+          "labels": [
+            "phase:phase-5",
+            "version:1.0",
+            "testing"
+          ]
+        },
+        {
+          "title": "Operator guide: making a node reachable",
+          "body": "Step-by-step setup for a router port forward (including double NAT) and for Tailscale Funnel raw TCP, how to check it from outside, and troubleshooting (carrier-grade NAT, hard NAT, Funnel's HTTPS mode being wrong).\n\nDesign: docs/design-spec.md section 8, \"Reachability and direct media paths\"; decision A-16 in docs/conformance.md (58da01e).",
+          "labels": [
+            "phase:phase-5",
+            "version:1.0",
+            "docs"
+          ]
+        }
+      ],
+      "issue": 45
+    },
+    {
+      "title": "Pilot packet for a second household (M-4)",
+      "labels": [
+        "docs",
+        "version:1.0"
+      ],
+      "phase": "phase-5",
+      "state": "open",
+      "body": "A self-contained setup packet the friend's agent can follow: what Jellymesh is, requirements (Docker, Jellyfin 10.11.x, a reachable address by port forward or Funnel raw TCP), getting the software (collaborator access or an image file, to decide), compose file and service user, publishing, joining with a code sent separately, verification, what to report back (never credentials), and teardown. Depends on the operator guide and the join-time address check. Relates to #40.",
+      "issue": 58
+    },
+    {
+      "title": "Later: automatic port mapping and third-member relays",
+      "labels": [
+        "enhancement"
+      ],
+      "phase": "phase-6",
+      "state": "open",
+      "body": "Not in the first cut of A-16. (1) Open the advertised port automatically by UPnP, NAT-PMP or PCP on single-NAT homes (Google Wifi supports all three; a double NAT defeats it). (2) Relay signalling through a third member when neither node is reachable. (3) Opt-in media relaying through a third member when punching fails at both ends.",
+      "issue": 59
     }
   ]
 }
