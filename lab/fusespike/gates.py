@@ -437,5 +437,123 @@ def g2():
     print("G2", "PASS" if all_ok else "FAIL")
 
 
+
+def container_memory():
+    out = docker("stats", "--no-stream", "--format", "{{.Name}} {{.MemUsage}}").stdout
+    usage = {}
+    for line in out.splitlines():
+        name, used = line.split(" ", 1)
+        if name.startswith("fusespike-"):
+            usage[name.removeprefix("fusespike-")] = used.split(" / ")[0]
+    return usage
+
+
+def g7(until="07:30", log_path=None):
+    """The soak: continuous playback, a random disruption every cycle, and
+    every invariant checked after each one, until the given local time."""
+    import datetime
+    import random
+    hour, minute = map(int, until.split(":"))
+    now = datetime.datetime.now()
+    end = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if end <= now:
+        end += datetime.timedelta(days=1)
+    log = open(log_path or os.path.join(BASE, "soak.log"), "a", buffering=1)
+
+    def say(line):
+        stamped = f"{datetime.datetime.now():%H:%M:%S} {line}"
+        print(stamped, flush=True)
+        log.write(stamped + "\n")
+
+    events = ["refuse", "hang", "crawl", "reader-stopped", "mount-crashed", "mount-deadlocked",
+              "mount-frozen", "add-films", "scan", "jellyfin-restart"]
+    weights = [2, 2, 1, 2, 3, 2, 2, 1, 2, 1]
+    expected, watched = snapshot()
+    monitor = Monitor(); monitor.start()
+    streams, cycle, failures, added = [], 0, 0, 0
+    say(f"soak start; until {end:%Y-%m-%d %H:%M}; items {'/'.join(str(len(expected[l])) for l in LIBS)}; watched {len(watched)}")
+
+    def keep_streaming():
+        while len(streams) < 2 or any(t.ended is not None for t in streams):
+            for t in [t for t in streams if t.ended is not None]:
+                streams.remove(t)
+            if len(streams) < 2:
+                t = Streamer(fuse_item(random.randint(1, 30)), random.randint(0, 1_000_000_000)); t.start()
+                streams.append(t)
+
+    while datetime.datetime.now() < end:
+        cycle += 1
+        keep_streaming()
+        forced = os.environ.get("FORCE_EVENTS", "").split(",")
+        event = forced[cycle - 1] if cycle <= len(forced) and forced[0] else random.choices(events, weights)[0]
+        monitor.worst, restart_expected = 0.0, event == "jellyfin-restart"
+        problems = []
+        began = time.time()
+        try:
+            if event == "add-films":
+                added += 1
+                add_films(3, f"s{added:03d}")
+                docker("restart", "-t", "1", "fusespike-reader")
+                docker("exec", "fusespike-mount", "kill", "-USR1", "1")
+                wait_mount(); time.sleep(3)
+                jf.scan()
+                for library in LIBS:
+                    pass
+                new_ids, _ = snapshot()
+                grown = len(new_ids["FUSE Movies"]) - len(expected["FUSE Movies"])
+                if grown != 3:
+                    problems.append(f"expected 3 new films, got {grown}")
+                expected = new_ids
+            elif event == "scan":
+                jf.scan()
+            elif event == "jellyfin-restart":
+                docker("restart", "-t", "10", "fusespike-jellyfin")
+                for _ in range(120):
+                    try:
+                        jf.call("GET", "/System/Info"); break
+                    except Exception:
+                        time.sleep(1)
+            else:
+                inject(event)
+                time.sleep(random.randint(20, 50))
+                restore(event)
+        except Exception as error:
+            problems.append(f"event error {type(error).__name__}: {error}")
+        time.sleep(5)
+        # Invariants.
+        try:
+            recovery = recovered(random.randint(1, 30), timeout=120)
+            if recovery is None:
+                problems.append("no recovery within 120 s")
+            stuck, _ = stuck_threads()
+            if stuck:
+                time.sleep(25)
+                stuck, _ = stuck_threads()
+                if stuck:
+                    problems.append(f"{stuck} threads stuck in D after 30 s")
+            if monitor.worst > 3 and not restart_expected:
+                problems.append(f"Jellyfin ping took {monitor.worst:.1f} s")
+            ids, now_watched = snapshot()
+            lost = sum(len(expected[l] - ids[l]) for l in LIBS)
+            if lost:
+                problems.append(f"{lost} items lost")
+            if not watched <= now_watched:
+                problems.append(f"{len(watched - now_watched)} watched states lost")
+            expected = {l: expected[l] | ids[l] for l in LIBS}
+        except Exception as error:
+            problems.append(f"check error {type(error).__name__}: {error}")
+            recovery = None
+        failures += bool(problems)
+        restarts = docker("inspect", "fusespike-mount", "--format", "{{.RestartCount}}").stdout.strip()
+        say(f"cycle {cycle:4d} {event:<17} {time.time() - began:5.0f} s  recovery {recovery} s  ping worst {monitor.worst:.2f} s  "
+            f"items {'/'.join(str(len(expected[l])) for l in LIBS)}  mount restarts {restarts}  mem {container_memory()}  "
+            + ("OK" if not problems else "FAIL: " + "; ".join(problems)))
+        time.sleep(random.randint(10, 40))
+    monitor.running = False
+    for t in streams:
+        t.ended = t.ended or 0
+    say(f"soak end: {cycle} cycles, {failures} with problems")
+
+
 if __name__ == "__main__":
     globals()[sys.argv[1]](*sys.argv[2:])

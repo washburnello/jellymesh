@@ -20,6 +20,13 @@ BASE=${FUSESPIKE_BASE:-$HOME/.local/share/jellymesh-fusespike}
 # its own, so devices reaching the wired address are dropped by reverse-path
 # filtering; the Wi-Fi address always works.
 LAN_IPS=${LAN_IPS:-192.168.87.20 192.168.87.249}
+# Publish only on addresses walnut holds right now: binding an absent one
+# fails, and a container restart would then fail with it.
+present_ips() {
+  local ip held
+  held=$(ip -4 -o addr show | awk '{print $4}' | cut -d/ -f1)
+  for ip in $LAN_IPS; do grep -qx "$ip" <<<"$held" && printf '%s ' "$ip"; done
+}
 JF_UID=7777
 url=http://127.0.0.1:18130
 
@@ -41,8 +48,9 @@ start_mount() {
     fusespike:latest /usr/local/bin/mount -allow-uids "$JF_UID" >/dev/null
 }
 start_reader() {
-  docker run -d --name fusespike-reader --restart unless-stopped --network fusespike --memory 1g \
-    -p 127.0.0.1:18200:8200 -v "$BASE/state:/state:ro" fusespike:latest /usr/local/bin/reader >/dev/null
+  # The cache is bounded; GOMEMLIMIT keeps Go's garbage well under the cap.
+  docker run -d --name fusespike-reader --restart unless-stopped --network fusespike --memory 1g -e GOMEMLIMIT=600MiB \
+    -p 127.0.0.1:18200:8200 -v "$BASE/state:/state:ro" fusespike:latest /usr/local/bin/reader -cache-mb 256 >/dev/null
 }
 
 # go-fuse does not yet send the kernel a request timeout; a small patch does
@@ -79,7 +87,7 @@ up() {
   docker run --rm -v fusespike-jf-config:/c -v fusespike-jf-cache:/k alpine:3 chown -R "$JF_UID:$JF_UID" /c /k
   chmod -R a+rX "$BASE/strm"
   docker run -d --name fusespike-jellyfin --restart unless-stopped --network fusespike --user "$JF_UID:$JF_UID" --memory 2g \
-    -p "127.0.0.1:18130:8096" $(for ip in $LAN_IPS; do printf -- '-p %s:18130:8096 ' "$ip"; done) \
+    -p "127.0.0.1:18130:8096" $(for ip in $(present_ips); do printf -- '-p %s:18130:8096 ' "$ip"; done) \
     -v fusespike-jf-config:/config -v fusespike-jf-cache:/cache \
     --mount "type=bind,src=$BASE/share,dst=/remote,readonly,bind-propagation=rslave" \
     -v "$BASE/strm:/strm:ro" jellyfin/jellyfin:10.11.11 >/dev/null
@@ -90,7 +98,7 @@ up() {
 restart_jellyfin() {
   docker rm -f fusespike-jellyfin >/dev/null 2>&1 || true
   docker run -d --name fusespike-jellyfin --restart unless-stopped --network fusespike --user "$JF_UID:$JF_UID" --memory 2g \
-    -p "127.0.0.1:18130:8096" $(for ip in $LAN_IPS; do printf -- '-p %s:18130:8096 ' "$ip"; done) \
+    -p "127.0.0.1:18130:8096" $(for ip in $(present_ips); do printf -- '-p %s:18130:8096 ' "$ip"; done) \
     -v fusespike-jf-config:/config -v fusespike-jf-cache:/cache \
     --mount "type=bind,src=$BASE/share,dst=/remote,readonly,bind-propagation=rslave" \
     -v "$BASE/strm:/strm:ro" jellyfin/jellyfin:10.11.11 >/dev/null
