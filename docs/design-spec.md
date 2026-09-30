@@ -1064,11 +1064,13 @@ with plain HTTP, and it forwards each request to the source over mutual TLS.
   bytes it sends (C-PB-3). Serving a stream above the ceiling as a source-side
   transcode, the second half of A-1, is a later step (C-PB-4).
 
-### Presentation through a virtual filesystem (proposed, spike #60)
+### Presentation through a virtual filesystem (decided, A-17)
 
-Status: **proposed**, pending the last gate of the spike (#60, G7 soak,
-2026-09-29 to 30). The spike's code and measurements are in
-`lab/fusespike/`. Nothing here is built into Jellymesh yet.
+Status: **decided** with the user 2026-09-30, after the spike (#60) passed
+all seven gates, including a 791-cycle, 13.5-hour soak. The spike's code
+and measurements are in `lab/fusespike/`. It is being built into Jellymesh
+under the "FUSE presentation" issues. Until then nodes use `.strm`, which
+stays as the fallback for hosts that fail the self-test.
 
 **Why.** Some clients play a `.strm` item's URL themselves instead of asking
 Jellyfin for it. The Jellyfin Roku app does this for every remote source

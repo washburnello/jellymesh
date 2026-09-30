@@ -376,6 +376,31 @@ Cost: a new UDP transport (QUIC) and a dependency on public STUN servers. A
 pair whose routers both allocate a new port per destination streams through
 the advertised address, and for a Funnel node that means Tailscale's limits.
 
+**A-17. Remote films presented as files through FUSE (#60).**
+Decided with the user 2026-09-30: remote films appear to Jellyfin as
+ordinary files served by a small FUSE mount process, not as `.strm`
+references, on hosts that pass a self-test. Other hosts keep `.strm`. The
+mode is chosen once per node, at setup and after updates, and never
+switched per incident. Remote films live in their own libraries with
+trickplay and chapter extraction off. Design in design-spec section 11,
+"Presentation through a virtual filesystem".
+Rationale: some apps play a `.strm` URL themselves; the Jellyfin Roku app
+always does, so remote films failed on it. Through FUSE every app streams
+through Jellyfin: the same Roku played, seeked, resumed, and switched
+subtitles (#60 G4). Stability outranks compatibility, so FUSE was adopted
+only after it passed every stability gate:
+- Jellyfin never hung under source, reader, or mount failures (G1).
+- The library never shrank (G2).
+- Nothing but probes crossed the network (G3).
+- Everything recovered by itself (G5).
+- It felt as fast as `.strm` (G6).
+- It survived a 791-cycle soak (G7).
+Cost: Linux hosts with `/dev/fuse`, a privileged mount container, shared
+mount propagation, and a kernel with FUSE request timeouts. About 1 MB per
+film is read at scan time from sources' uplinks. A patch to go-fuse is
+carried until it is upstream. Remote films are in separate libraries rather
+than the main ones.
+
 **A-5. Group state replication (C-PO-14 to C-PO-20, C-TR-9).**
 Assumed: group state (owner, epoch, administrators, the roster bound to
 fingerprints, ejections, group defaults) is derived by replaying an
