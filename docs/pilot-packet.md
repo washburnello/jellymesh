@@ -1,8 +1,7 @@
 # Jellymesh pilot: setting up a second household
 
-**Status: draft (#58).** Two items are marked **TO DECIDE** and must be
-filled in before this is sent: how the software is obtained, and the address
-to join.
+**Status: draft (#58).** Before sending, the Washburn node must be running
+in a group founded with its public address (see section 8).
 
 This packet is written for the person setting up, and for an assistant (such
 as an AI coding agent) working on their behalf. Follow it in order. Every
@@ -47,13 +46,13 @@ What others in the group can see:
 
 ## 3. Get the software
 
-**TO DECIDE:** GitHub access to the repository, or an image file we send.
+The project is open source (MIT):
 
-- *If the repository:* `git clone <repository URL>` and build with
-  `docker compose -f deploy/docker-compose.yml build`.
-- *If an image file:* `docker load < jellymesh-<version>.tar`, then use
-  `deploy/docker-compose.yml` from this packet with `image:` set to the
-  loaded tag.
+```sh
+git clone https://github.com/washburnello/jellymesh
+cd jellymesh
+docker compose -f deploy/docker-compose.yml build
+```
 
 **Check:** `docker image ls | grep jellymesh` lists the image.
 
@@ -121,8 +120,9 @@ with files outside the roots you declare.
 ## 8. Join the group
 
 We send you, over a channel we both trust (a phone call or a message app):
-- **an address to join:** **TO DECIDE**, which depends on how the Washburn
-  node is reached (#48);
+- **an address to join:** `cedar.sungrazer-shade.ts.net:10000` (the
+  Washburn node, reached through Tailscale Funnel; you do not need
+  Tailscale);
 - **a one-time short code.**
 
 ```sh

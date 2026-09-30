@@ -83,3 +83,7 @@ In a container deployment, prefix each command with `docker compose exec jellyme
 The initial implementation direction is a Jellymesh Service beside each Jellyfin server. The Jellymesh Service synchronizes approved remote catalog data into normal Jellyfin-readable media references, while Jellyfin performs normal browsing, grouping, playback, and local user-state management. Remote roots will be integrated by Jellyfin collection type—Movies, TV Shows, and Music—rather than assuming one ordinary library can contain all three.
 
 A permanent shared group key is not the authorization mechanism. Servers use pairwise trust, a group library pool, and per-source-library opt-out decisions. Every group has an owner and explicitly assigned administrators for invitations and membership state; the owner/admin control plane is not a media relay. Group membership is for server owners only; each joining server must publish at least one non-empty library. Blocking is a local pairwise media cut. Every library is private by default; Cedar’s `Family Movies` library must be explicitly protected from federation.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

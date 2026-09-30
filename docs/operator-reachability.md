@@ -66,6 +66,12 @@ tailscale funnel --bg --tcp 10000 tcp://localhost:8443
 Then set `JELLYMESH_PUBLIC_HOSTNAME` to `<machine>.<tailnet>.ts.net:10000`.
 Funnel allows only ports 443, 8443, and 10000.
 
+**Advertise the name, never Funnel's IP.** Many machines share Funnel's
+public addresses, and Tailscale routes each connection by the name the
+client sends in its TLS handshake. Jellymesh sends the advertised name, so
+the name works. A bare IP reaches Tailscale's edge, which closes the
+connection.
+
 **Use only `--tcp`.** Funnel's default HTTPS mode decrypts traffic at
 Tailscale's servers. That breaks the pinned-key TLS every member relies on,
 so members cannot connect and joining fails. `--tcp` passes the encrypted

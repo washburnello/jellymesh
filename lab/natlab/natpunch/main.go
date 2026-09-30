@@ -14,6 +14,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -30,8 +31,10 @@ import (
 	"strings"
 	"time"
 
+	"jellymesh/internal/enrollment"
 	"jellymesh/internal/natpath"
 	"jellymesh/internal/node"
+	"jellymesh/internal/transport"
 )
 
 type published struct {
@@ -62,6 +65,8 @@ func main() {
 		runNode(os.Args[2:])
 	case "stunprobe":
 		stunProbe(os.Args[2:])
+	case "reach":
+		reach(os.Args[2:])
 	default:
 		log.Fatalf("unknown command %q", os.Args[1])
 	}
@@ -103,6 +108,39 @@ func stun(args []string) {
 		}
 		conn.WriteTo(response, from)
 	}
+}
+
+// reach performs the check an approver makes before admitting a node
+// (C-NT-1): a TLS handshake to address that must present the key with
+// fingerprint. Use it to confirm an advertised address works from outside,
+// through a port forward or Tailscale Funnel.
+func reach(args []string) {
+	flags := flag.NewFlagSet("reach", flag.ExitOnError)
+	address := flags.String("address", "", "host:port to reach")
+	fingerprint := flags.String("fingerprint", "", "the node's key fingerprint")
+	connect := flags.String("connect", "", "connect to this IP instead of resolving the address, still sending its name (to test a public path from a host whose DNS gives a private one)")
+	flags.Parse(args)
+	dir, _ := os.MkdirTemp("", "reach")
+	id, err := node.LoadOrCreate(filepath.Join(dir, "node.key"), filepath.Join(dir, "node.crt"), "reach")
+	if err != nil {
+		log.Fatal(err)
+	}
+	began := time.Now()
+	if *connect != "" {
+		host, port, _ := net.SplitHostPort(*address)
+		want := node.Fingerprint(*fingerprint)
+		config := transport.ClientTLSConfig(id.TLSCertificate(), want, transport.NewMemoryTrustStore(want))
+		config.ServerName = host
+		dialer := &tls.Dialer{NetDialer: &net.Dialer{Timeout: 10 * time.Second}, Config: config}
+		conn, dialErr := dialer.DialContext(context.Background(), "tcp", net.JoinHostPort(*connect, port))
+		if dialErr == nil {
+			conn.Close()
+		}
+		fmt.Printf("%s via %s: %v (%v)\n", *address, *connect, map[bool]string{true: "the pinned key answers", false: "FAILED: " + fmt.Sprint(dialErr)}[dialErr == nil], time.Since(began).Round(time.Millisecond))
+		return
+	}
+	err = enrollment.CheckAdvertisedAddress(context.Background(), id, *address, node.Fingerprint(*fingerprint))
+	fmt.Printf("%s: %v (%v)\n", *address, map[bool]string{true: "the pinned key answers", false: "FAILED: " + fmt.Sprint(err)}[err == nil], time.Since(began).Round(time.Millisecond))
 }
 
 // stunProbe runs one STUN discovery from a UDP socket and prints the
