@@ -585,6 +585,121 @@
       "state": "open",
       "issue": 62,
       "body": "See GitHub #62."
+    },
+    {
+      "title": "FUSE presentation: remote films as ordinary files (A-17)",
+      "labels": [
+        "feature",
+        "version:1.0"
+      ],
+      "phase": "phase-5",
+      "state": "open",
+      "body": "Build the FUSE presentation the spike proved, so every app plays remote films. It must keep the spike's robustness: read deadlines, the kernel request timeout, the watchdog remount, healing re-probes, and contents for Jellyfin's uid only. Hosts that fail the self-test keep .strm.\n\nDone when the new conformance criteria pass, and gates G1 to G7 have been rerun against the implementation with the same results as the spike.\n\nDesign: docs/design-spec.md section 11, \"Presentation through a virtual filesystem\"; decision A-17; spike evidence in lab/fusespike/README.md (#60).",
+      "children": [
+        {
+          "title": "Mount process in the main build (jellymesh mount)",
+          "body": "Port lab/fusespike/cmd/mount into the product as a small, separate process and container: a read-only tree from a local manifest, a hard read deadline, a direct-I/O health file and watchdog, detaching a dead mount at start, contents for the allowed uid only, and the FUSE request timeout. Keep it minimal: no network code beyond a local socket to the daemon.\n\nDesign: docs/design-spec.md section 11, \"Presentation through a virtual filesystem\"; decision A-17; spike evidence in lab/fusespike/README.md (#60).",
+          "labels": [
+            "phase:phase-5",
+            "version:1.0",
+            "feature"
+          ]
+        },
+        {
+          "title": "go-fuse request timeout: upstream, or carry the patch",
+          "body": "The mount needs FUSE_REQUEST_TIMEOUT (patch in lab/fusespike/patches, draft PR text in UPSTREAM.md). Submit upstream with the user's OK (it goes out under their account), and carry the patch meanwhile, via a replace to a vendored copy with the patch recorded.\n\nDesign: docs/design-spec.md section 11, \"Presentation through a virtual filesystem\"; decision A-17; spike evidence in lab/fusespike/README.md (#60).",
+          "labels": [
+            "phase:phase-5",
+            "version:1.0",
+            "feature"
+          ]
+        },
+        {
+          "title": "Materializer writes a manifest for the mount",
+          "body": "In FUSE mode the materializer produces the mount's manifest: films, NFOs, posters, and subtitles, with the same layout, grouping, identity, pins, and stable references as .strm mode. Updates reach the running mount without a restart, invalidating the kernel's cache for changed and removed entries.\n\nDesign: docs/design-spec.md section 11, \"Presentation through a virtual filesystem\"; decision A-17; spike evidence in lab/fusespike/README.md (#60).",
+          "labels": [
+            "phase:phase-5",
+            "version:1.0",
+            "feature"
+          ]
+        },
+        {
+          "title": "Daemon read service for the mount",
+          "body": "A local socket the mount reads film bytes through: 1 MiB chunks, a bounded cache, and read-ahead only once reading is sequential. It fetches from sources through the existing media route, so the source authorizes every request, the ceiling applies, and direct paths are used. Integrate with or replace the head cache.\n\nDesign: docs/design-spec.md section 11, \"Presentation through a virtual filesystem\"; decision A-17; spike evidence in lab/fusespike/README.md (#60).",
+          "labels": [
+            "phase:phase-5",
+            "version:1.0",
+            "feature"
+          ]
+        },
+        {
+          "title": "Heal films whose probe failed",
+          "body": "Retry a film whose read failed and, once it is readable, move its modification time forward (an hour; Jellyfin ignores a second) so the next scan probes it (spike G2-E).\n\nDesign: docs/design-spec.md section 11, \"Presentation through a virtual filesystem\"; decision A-17; spike evidence in lab/fusespike/README.md (#60).",
+          "labels": [
+            "phase:phase-5",
+            "version:1.0",
+            "feature"
+          ]
+        },
+        {
+          "title": "Bitrate pacing guard against extraction",
+          "body": "A second line of defence if an operator turns trickplay or chapter extraction on for a remote library: past a burst, pace each film's reads to a small multiple of its average bitrate, so an extraction costs no more than one viewer. Validate that playback and transcoding are unaffected.\n\nDesign: docs/design-spec.md section 11, \"Presentation through a virtual filesystem\"; decision A-17; spike evidence in lab/fusespike/README.md (#60).",
+          "labels": [
+            "phase:phase-5",
+            "version:1.0",
+            "feature",
+            "security"
+          ]
+        },
+        {
+          "title": "Mode self-test and status",
+          "body": "At setup and after each update, choose FUSE or .strm by checking /dev/fuse, the container's privileges, shared mount propagation, a kernel with FUSE request timeouts, and that the mount is visible inside Jellyfin's container. Report the mode and the reason in jellymesh status. Never switch per incident.\n\nDesign: docs/design-spec.md section 11, \"Presentation through a virtual filesystem\"; decision A-17; spike evidence in lab/fusespike/README.md (#60).",
+          "labels": [
+            "phase:phase-5",
+            "version:1.0",
+            "feature"
+          ]
+        },
+        {
+          "title": "Deployment: mount container, propagation, separate libraries",
+          "body": "Compose file with the mount container (/dev/fuse, SYS_ADMIN), a shared bind for the mount and a slave bind into Jellyfin, Jellyfin as a dedicated uid, and the Friends libraries with extraction and savers off. Include start-up ordering and restart policies.\n\nDesign: docs/design-spec.md section 11, \"Presentation through a virtual filesystem\"; decision A-17; spike evidence in lab/fusespike/README.md (#60).",
+          "labels": [
+            "phase:phase-5",
+            "version:1.0",
+            "feature",
+            "docs"
+          ]
+        },
+        {
+          "title": "Migration from .strm to FUSE",
+          "body": "Moving a node from .strm to FUSE recreates each generated item at a new path. Test that watched state reattaches by provider identifiers (A-14), that pins keep folders, and that removal of the old library follows the safe order (placeholder, scan, then delete).\n\nDesign: docs/design-spec.md section 11, \"Presentation through a virtual filesystem\"; decision A-17; spike evidence in lab/fusespike/README.md (#60).",
+          "labels": [
+            "phase:phase-5",
+            "version:1.0",
+            "feature",
+            "testing"
+          ]
+        },
+        {
+          "title": "Conformance criteria and rerunning the gates on the implementation",
+          "body": "Add C-FS criteria bound to automated tests where possible (deadlines, watchdog remount, uid gate, healing, manifest updates), and rerun the spike's G1 to G7 against the real build on walnut, with G4 on the user's devices.\n\nDesign: docs/design-spec.md section 11, \"Presentation through a virtual filesystem\"; decision A-17; spike evidence in lab/fusespike/README.md (#60).",
+          "labels": [
+            "phase:phase-5",
+            "version:1.0",
+            "testing"
+          ]
+        },
+        {
+          "title": "Operator guide and supported-matrix updates for FUSE",
+          "body": "Document requirements, the self-test's messages, the separate libraries, and troubleshooting. Update docs/supported.md's client matrix once the implementation is tested.\n\nDesign: docs/design-spec.md section 11, \"Presentation through a virtual filesystem\"; decision A-17; spike evidence in lab/fusespike/README.md (#60).",
+          "labels": [
+            "phase:phase-5",
+            "version:1.0",
+            "docs"
+          ]
+        }
+      ],
+      "issue": 63
     }
   ]
 }
