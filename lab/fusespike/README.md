@@ -74,4 +74,25 @@ FUSE reports the real file size (1.47 GB against 86 B for a `.strm`) and full me
 
 The films are the spike's test data: synthetic "Added"/"Spike Film" entries, and the three real films with bare NFOs and no artwork. Real Jellymesh carries each film's NFO, poster, and subtitles, as it does for `.strm` today.
 
-**G7, 24-hour soak: NOT STARTED.** The overnight session stopped at 01:15 on an API error, before the soak began.
+**G7, soak: PASS** (run 2026-09-29 18:03 to 07:30, 13.5 hours, shortened from 24 by the user). 791 cycles, with two films streaming continuously and one random disruption per cycle:
+
+| Disruption | Count |
+|---|---|
+| mount crashed | 132 |
+| mount deadlocked | 100 |
+| source hung | 94 |
+| mount frozen | 92 |
+| reader stopped | 86 |
+| scan | 80 |
+| source refused | 78 |
+| films added (3 each) | 48 |
+| source crawled | 45 |
+| Jellyfin restarted | 36 |
+
+- Jellyfin's API never took longer than 0.17 s to answer, and playback always recovered without anyone stepping in (at most 12.5 s, after a deadlock).
+- No item or watched state was ever lost.
+- Memory stayed bounded: mount at most 47 MiB, reader at most 616 MiB under its 600 MiB GOMEMLIMIT, Jellyfin at most 758 MiB.
+- The mount restarted 351 times, all automatically.
+- The only two failures were the harness scanning before the restarted mount was up (fixed in e553e7e for later runs). The films arrived at later scans, and all 144 added films were present afterwards.
+
+**Result: all seven gates pass.** Recommended next step: adopt the FUSE presentation as designed in design-spec section 11, "Presentation through a virtual filesystem", with `.strm` kept for hosts that fail the self-test.
