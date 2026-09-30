@@ -1,7 +1,13 @@
 # Draft upstream change: go-fuse request timeout
 
-**Status:** draft only, not submitted. Submitting publishes it under the
-user's GitHub account, so it waits for their OK.
+**Status:** approved by the user (2026-09-30) and committed, ready to push.
+go-fuse takes changes through Gerrit on GerritHub, not GitHub pull requests
+(its CONTRIBUTING file). The commit is on branch `request-timeout` in
+`~/Work/upstream/go-fuse`, against master at ef82fd5, with a Change-Id and
+the unit test `TestInitRequestTimeout`. It waits for the user to link their
+GitHub account at review.gerrithub.io; then it is pushed with:
+
+    git push ssh://washburnello@review.gerrithub.io:29418/hanwen/go-fuse HEAD:refs/for/master
 
 **Target:** github.com/hanwen/go-fuse (v2). Check the project's contribution
 route first: it has historically taken changes through GerritHub as well as
