@@ -574,6 +574,17 @@
       "state": "open",
       "issue": 61,
       "body": "See GitHub #61."
+    },
+    {
+      "title": "Let a member change its advertised address",
+      "labels": [
+        "enhancement",
+        "version:1.0"
+      ],
+      "phase": "phase-5",
+      "state": "open",
+      "issue": 62,
+      "body": "See GitHub #62."
     }
   ]
 }
