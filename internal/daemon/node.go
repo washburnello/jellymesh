@@ -22,6 +22,7 @@ import (
 	"jellymesh/internal/config"
 	"jellymesh/internal/enrollment"
 	"jellymesh/internal/federation"
+	"jellymesh/internal/filmread"
 	groupwatch "jellymesh/internal/group"
 	"jellymesh/internal/grouplog"
 	"jellymesh/internal/jellyfin"
@@ -72,6 +73,8 @@ type Node struct {
 	materialized *store.MaterializedRepository
 	materializer *materialize.Materializer
 	heads        *relay.HeadCache
+	// reads serves the mount film bytes, in "fuse" presentation only.
+	reads *filmread.Server
 
 	// direct is the direct-path endpoint (A-16), or nil when direct paths
 	// are off; directError says why, when they are off by failure.
@@ -168,7 +171,22 @@ func Open(ctx context.Context, cfg config.Config, logger *log.Logger) (*Node, er
 			database.Close()
 			return nil, err
 		}
-		n.materializer.OnRemove = n.heads.Remove
+	}
+	if cfg.Presentation == config.PresentFUSE {
+		n.materializer.SetPresentation(materialize.PresentFiles)
+		n.reads = filmread.New(filmread.Options{
+			Resolver: n.materialized, Policy: relayPolicy{n}, Upstream: sourceAccess{n},
+			CacheBytes: cfg.ReadCacheBytes, FailedPath: filepath.Join(cfg.DataDirectory, "cache", "failed-films.json"),
+			Healed: n.materializer.MarkChanged, Logger: n.logger,
+		})
+	}
+	n.materializer.OnRemove = func(record store.Materialized) {
+		if n.heads != nil {
+			n.heads.Remove(record)
+		}
+		if n.reads != nil {
+			n.reads.Forget(record.Reference)
+		}
 	}
 	n.direct = openDirect(n)
 	groupIDs, err := n.logs.ListGroupIDs(ctx)
@@ -609,6 +627,9 @@ func (n *Node) Run(ctx context.Context, federationListener net.Listener, interva
 				}
 			}
 		}()
+	}
+	if n.reads != nil {
+		go n.reads.Heal(ctx)
 	}
 	go func() {
 		errs <- server.Serve(tlsListener(federationListener, federation.TLSConfig(n.identity)))

@@ -135,6 +135,8 @@ func (fake *Server) SetMedia(id string, content []byte) {
 	if len(current.MediaSources) == 0 {
 		current.MediaSources = []jellyfin.MediaSource{{ID: "ms-" + id}}
 	}
+	current.MediaSources[0].Size = int64(len(content))
+	current.MediaSources[0].Container = "mkv"
 }
 
 // AddSubtitle gives an item an external subtitle at a stream index.

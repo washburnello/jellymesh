@@ -23,6 +23,7 @@
 //	jellymesh backup <file>                 write an encrypted backup
 //	jellymesh restore <file>                restore a backup into an empty data directory
 //	jellymesh healthcheck                   exit 0 if the local node answers (for container health checks)
+//	jellymesh mount                         show films as files to Jellyfin (its own container; see deploy/)
 //
 // Every command but serve, backup, and restore talks to the running node over
 // its loopback admin API, authenticated by the token in the data directory.
@@ -60,6 +61,10 @@ func main() {
 	if len(os.Args) < 2 {
 		usage()
 	}
+	if os.Args[1] == "mount" {
+		runMount(os.Args[2:])
+		return
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatal(err)
@@ -72,7 +77,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: jellymesh serve|status|found|invite|join|requests|approve|deny|eject|promote|demote|leave|block|unblock|sync|libraries|publish|unpublish|remote|optout|optin|catalog-sync|generated|backup|restore|healthcheck")
+	fmt.Fprintln(os.Stderr, "usage: jellymesh serve|status|found|invite|join|requests|approve|deny|eject|promote|demote|leave|block|unblock|sync|libraries|publish|unpublish|remote|optout|optin|catalog-sync|generated|backup|restore|healthcheck|mount")
 	os.Exit(2)
 }
 
@@ -213,6 +218,15 @@ func serve(cfg config.Config) error {
 		}
 	}()
 	defer relayServer.Close()
+
+	if handler := n.ReadHandler(); handler != nil {
+		closeReads, err := serveReads(handler, cfg.ReadSocket)
+		if err != nil {
+			return err
+		}
+		defer closeReads()
+		log.Printf("presenting films through the mount; read socket %s", cfg.ReadSocket)
+	}
 
 	federationListener, err := net.Listen("tcp", cfg.FederationListenAddress)
 	if err != nil {

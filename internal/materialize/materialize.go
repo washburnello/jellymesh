@@ -25,8 +25,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"jellymesh/internal/filmfile"
 	"jellymesh/internal/sourcecatalog"
 	"jellymesh/internal/store"
 )
@@ -68,6 +70,30 @@ type Materializer struct {
 	// anything held for it elsewhere, such as the relay's cache of its first
 	// bytes, can be dropped too.
 	OnRemove func(store.Materialized)
+
+	presentation Presentation
+	// mutex serializes passes with MarkChanged, which rewrites a descriptor
+	// a pass may also write.
+	mutex sync.Mutex
+}
+
+// Presentation is how remote items reach Jellyfin (A-17).
+type Presentation int
+
+const (
+	// PresentStrm writes a .strm naming the relay for each item.
+	PresentStrm Presentation = iota
+	// PresentFiles writes a film descriptor for each item, which the mount
+	// shows as the film itself.
+	PresentFiles
+)
+
+// SetPresentation chooses how items are written. Changing it moves every
+// item to a new path at the next pass.
+func (materializer *Materializer) SetPresentation(presentation Presentation) {
+	materializer.mutex.Lock()
+	defer materializer.mutex.Unlock()
+	materializer.presentation = presentation
 }
 
 // PinRetention is how long a work keeps its folder and identifiers after it
@@ -127,7 +153,7 @@ type Result struct {
 type plan struct {
 	item      store.RemoteItem
 	metadata  sourcecatalog.Metadata
-	strm      string            // relative path of the .strm
+	strm      string            // relative path of the .strm, or the film's descriptor
 	files     map[string][]byte // relative path to content, metadata first
 	subtitles map[string]int    // relative path to subtitle index
 	images    map[string]imageRef
@@ -137,6 +163,8 @@ type imageRef struct{ source, item string }
 
 // Reconcile brings the generated root into line with input.
 func (materializer *Materializer) Reconcile(ctx context.Context, input Input) (Result, error) {
+	materializer.mutex.Lock()
+	defer materializer.mutex.Unlock()
 	var result Result
 	existing, err := materializer.records.All(ctx)
 	if err != nil {
@@ -412,12 +440,12 @@ func (materializer *Materializer) planMovies(works []grouped, names map[string]s
 			base := filepath.Base(folder) + " - " + label
 			current := plan{
 				item: version.item, metadata: version.metadata,
-				strm:      unique(filepath.Join(folder, base), version.key(), used),
+				strm:      materializer.playable(unique(filepath.Join(folder, base), version.key(), used), version.metadata),
 				files:     map[string][]byte{filepath.Join(folder, "movie.nfo"): nfo},
 				subtitles: map[string]int{},
 				images:    map[string]imageRef{},
 			}
-			stem := strings.TrimSuffix(current.strm, ".strm")
+			stem := stemOf(current.strm)
 			current.subtitles = subtitleFiles(filepath.Dir(stem), filepath.Base(stem), version.metadata.Subtitles)
 			if poster != nil {
 				current.images[filepath.Join(folder, "poster.jpg")] = *poster
@@ -503,8 +531,8 @@ func (materializer *Materializer) planEpisodes(works []grouped, episodes []candi
 		if !current.numbered {
 			base = sanitize(lead.metadata.Name) + " - " + sanitize(chosen.metadata.Name)
 		}
-		strm := unique(filepath.Join(seasonFolder, base), chosen.key(), used)
-		stem := strings.TrimSuffix(strm, ".strm")
+		strm := materializer.playable(unique(filepath.Join(seasonFolder, base), chosen.key(), used), chosen.metadata)
+		stem := stemOf(strm)
 		next := plan{
 			item: chosen.item, metadata: chosen.metadata,
 			strm: strm,
@@ -539,16 +567,42 @@ func choose(candidates []candidate, held map[string]store.Materialized) candidat
 	return candidates[0]
 }
 
-// unique returns stem + ".strm", distinguished by the item it plays if
-// another plan already took that path.
+// unique returns stem, distinguished by the item it plays if another plan
+// already took it.
 func unique(stem string, key string, used map[string]bool) string {
-	path := stem + ".strm"
-	if used[path] {
+	if used[stem] {
 		sum := sha256.Sum256([]byte(key))
-		path = stem + " " + hex.EncodeToString(sum[:])[:6] + ".strm"
+		stem = stem + " " + hex.EncodeToString(sum[:])[:6]
 	}
-	used[path] = true
-	return path
+	used[stem] = true
+	return stem
+}
+
+// playable returns the path of the file that makes an item playable: the
+// .strm, or the film's descriptor, named after the film the mount shows.
+func (materializer *Materializer) playable(stem string, metadata sourcecatalog.Metadata) string {
+	if materializer.presentation != PresentFiles {
+		return stem + ".strm"
+	}
+	extension := "mkv"
+	if metadata.File != nil {
+		extension = filmfile.Extension(metadata.File.Extension)
+	}
+	return stem + "." + extension + filmfile.Suffix
+}
+
+// stemOf returns a playable path without its suffix, the name its sidecars
+// share: "Film - Cedar" for "Film - Cedar.strm" and "Film - Cedar.mkv.jmfilm".
+func stemOf(playable string) string {
+	if film, ok := strings.CutSuffix(playable, filmfile.Suffix); ok {
+		return strings.TrimSuffix(film, filepath.Ext(film))
+	}
+	return strings.TrimSuffix(playable, ".strm")
+}
+
+// isPlayable reports whether a file name is a .strm or a film descriptor.
+func isPlayable(name string) bool {
+	return !strings.HasPrefix(name, ".") && (filepath.Ext(name) == ".strm" || strings.HasSuffix(name, filmfile.Suffix))
 }
 
 // labels turns source names into version labels, distinct from one another.
@@ -682,8 +736,85 @@ func (materializer *Materializer) write(ctx context.Context, plan plan, referenc
 		}
 		written += did
 	}
-	did, err := materializer.writeFile(plan.strm, []byte(materializer.relayURL+"/r/"+reference+"\n"))
+	content := []byte(materializer.relayURL + "/r/" + reference + "\n")
+	if materializer.presentation == PresentFiles {
+		var err error
+		if content, err = materializer.descriptor(ctx, plan, reference); err != nil {
+			return written, err
+		}
+	}
+	did, err := materializer.writeFile(plan.strm, content)
 	return written + did, err
+}
+
+// ErrNoSize means a film's size is unknown, so it cannot be shown as a file.
+var ErrNoSize = errors.New("the source did not report the film's size")
+
+// Sizer finds a film's size at its source, for a source whose catalog does
+// not carry it.
+type Sizer interface {
+	Size(ctx context.Context, sourceNodeID string, itemID string) (int64, error)
+}
+
+// descriptor returns a film's descriptor. It keeps the modification time
+// already on disk while the film is unchanged, since Jellyfin probes a film
+// again whenever that time moves.
+func (materializer *Materializer) descriptor(ctx context.Context, plan plan, reference string) ([]byte, error) {
+	film := filmfile.Descriptor{Reference: reference}
+	if plan.metadata.File != nil {
+		film.Size, film.Bitrate = plan.metadata.File.Size, plan.metadata.File.Bitrate
+	}
+	if film.Size <= 0 {
+		sizer, ok := materializer.fetch.(Sizer)
+		if !ok {
+			return nil, ErrNoSize
+		}
+		size, err := sizer.Size(ctx, plan.item.SourceNodeID, plan.item.ItemID)
+		if err != nil || size <= 0 {
+			return nil, fmt.Errorf("%w: %v", ErrNoSize, err)
+		}
+		film.Size = size
+	}
+	film.Modified = materializer.now().Unix()
+	if target, err := materializer.resolve(plan.strm); err == nil {
+		if current, err := os.ReadFile(target); err == nil {
+			if held, err := filmfile.Decode(current); err == nil && held.Reference == film.Reference && held.Size == film.Size {
+				film.Modified = held.Modified
+			}
+		}
+	}
+	return film.Encode(), nil
+}
+
+// MarkChanged moves a film's modification time forward an hour, so that
+// Jellyfin probes it at its next scan. The read service calls it when a film
+// whose read failed is readable again: Jellyfin ignores a change of a second
+// (A-17, spike G2-E).
+func (materializer *Materializer) MarkChanged(ctx context.Context, reference string) error {
+	materializer.mutex.Lock()
+	defer materializer.mutex.Unlock()
+	record, found, err := materializer.records.ByReference(ctx, reference)
+	if err != nil || !found {
+		return err
+	}
+	if !strings.HasSuffix(record.Path, filmfile.Suffix) {
+		return nil // a .strm is never probed through the mount
+	}
+	target, err := materializer.resolve(record.Path)
+	if err != nil {
+		return err
+	}
+	current, err := os.ReadFile(target)
+	if err != nil {
+		return err
+	}
+	film, err := filmfile.Decode(current)
+	if err != nil {
+		return err
+	}
+	film.Modified += int64(time.Hour / time.Second)
+	_, err = materializer.writeFile(record.Path, film.Encode())
+	return err
 }
 
 func (materializer *Materializer) exists(relative string) bool {
@@ -758,7 +889,7 @@ func (materializer *Materializer) writeFile(relative string, content []byte) (in
 // deleted, then any folder left without a playable item.
 func (materializer *Materializer) remove(ctx context.Context, record store.Materialized) error {
 	target, err := materializer.resolve(record.Path)
-	if err != nil || filepath.Ext(target) != ".strm" {
+	if err != nil || !isPlayable(filepath.Base(target)) {
 		return fmt.Errorf("refusing to remove %q: %w", record.Path, ErrOutsideRoot)
 	}
 	if err := materializer.records.Remove(ctx, record.SourceNodeID, record.ItemID); err != nil {
@@ -768,11 +899,11 @@ func (materializer *Materializer) remove(ctx context.Context, record store.Mater
 		materializer.OnRemove(record)
 	}
 	directory := filepath.Dir(target)
-	base := strings.TrimSuffix(filepath.Base(target), ".strm")
+	base := stemOf(filepath.Base(target))
 	entries, _ := os.ReadDir(directory)
 	for _, entry := range entries {
 		name := entry.Name()
-		if name == base+".strm" || strings.HasPrefix(name, base+".") {
+		if strings.HasPrefix(name, base+".") {
 			os.Remove(filepath.Join(directory, name))
 		}
 	}
@@ -802,7 +933,7 @@ func (materializer *Materializer) pruneEmpty(directory string) {
 func holdsPlayable(directory string) bool {
 	found := false
 	filepath.WalkDir(directory, func(path string, entry os.DirEntry, err error) error {
-		if err == nil && !entry.IsDir() && filepath.Ext(path) == ".strm" && !strings.HasPrefix(entry.Name(), ".") {
+		if err == nil && !entry.IsDir() && isPlayable(entry.Name()) {
 			found = true
 			return filepath.SkipAll
 		}

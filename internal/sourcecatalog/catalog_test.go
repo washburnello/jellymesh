@@ -2,9 +2,11 @@ package sourcecatalog
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"jellymesh/internal/jellyfin"
@@ -408,5 +410,35 @@ func TestChangesCarrySourceMetadata(t *testing.T) {
 	got := change.Metadata
 	if len(got.Studios) != 1 || got.Studios[0] != "Probe Pictures" || got.Tagline != "Free your mind" || got.CommunityRating != 8.7 || got.CriticRating != 83 {
 		t.Fatalf("source metadata not carried: %+v", got)
+	}
+}
+
+// C-FS-1: an item's change carries its media file's size, bitrate, and
+// extension, which a destination needs to show the film as a file, and
+// nothing else of its path. An item without a known size carries no file.
+func TestChangesDescribeTheMediaFile(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	w.fake.AddItem("lib-movies", jellyfin.Item{ID: "movie-file", Name: "Sized", Type: "Movie", Path: "/media/movies/Sized/Sized (1985).MKV",
+		MediaSources: []jellyfin.MediaSource{{ID: "movie-file", Size: 1469241147, Bitrate: 2008222, Container: "mkv"}}})
+	w.fake.AddItem("lib-movies", jellyfin.Item{ID: "movie-odd", Name: "Odd", Type: "Movie", Path: "/media/movies/Odd/odd.weird-extension",
+		MediaSources: []jellyfin.MediaSource{{ID: "movie-odd", Size: 10, Container: "mov,mp4,m4a"}}})
+	w.fake.AddItem("lib-movies", jellyfin.Item{ID: "movie-unsized", Name: "Unsized", Type: "Movie", Path: "/media/movies/Unsized/u.mkv"})
+	if err := w.catalog.Publish(ctx, "lib-movies", []string{"/media/movies"}); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	changes := ids(w.changes(t, 0))
+	if file := changes["movie-file"].Metadata.File; file == nil || *file != (File{Size: 1469241147, Bitrate: 2008222, Extension: "mkv"}) {
+		t.Fatalf("file: %+v", file)
+	}
+	if file := changes["movie-odd"].Metadata.File; file == nil || file.Extension != "" || file.Size != 10 {
+		t.Fatalf("an extension that is not short and plain is not sent: %+v", file)
+	}
+	if file := changes["movie-unsized"].Metadata.File; file != nil {
+		t.Fatalf("an item without a size carries no file: %+v", file)
+	}
+	encoded, _ := json.Marshal(changes["movie-file"].Metadata)
+	if strings.Contains(string(encoded), "/media") || strings.Contains(string(encoded), "Sized (1985)") {
+		t.Fatalf("the path leaked: %s", encoded)
 	}
 }

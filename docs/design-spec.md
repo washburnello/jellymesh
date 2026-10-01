@@ -1068,9 +1068,12 @@ with plain HTTP, and it forwards each request to the source over mutual TLS.
 
 Status: **decided** with the user 2026-09-30, after the spike (#60) passed
 all seven gates, including a 791-cycle, 13.5-hour soak. The spike's code
-and measurements are in `lab/fusespike/`. It is being built into Jellymesh
-under the "FUSE presentation" issues. Until then nodes use `.strm`, which
-stays as the fallback for hosts that fail the self-test.
+and measurements are in `lab/fusespike/`. Built into Jellymesh under the
+"FUSE presentation" issues (#63): the mount, the read service, and the
+materializer's descriptors are in (C-FS-1 to C-FS-8); the self-test,
+pacing, deployment, and the rerun of the gates are in progress. Until a
+node is switched, it uses `.strm`, which stays as the fallback for hosts
+that fail the self-test.
 
 **Why.** Some clients play a `.strm` item's URL themselves instead of asking
 Jellyfin for it. The Jellyfin Roku app does this for every remote source
@@ -1082,46 +1085,70 @@ seeking, resuming, and switching subtitles (G4). Jellyfin also probes each
 film when it is added, so the real size, runtime, codecs, and HDR details
 are known before playback.
 
-**Shape.**
+**Shape.** `JELLYMESH_PRESENTATION=fuse` selects it.
 
-- **A small mount process**, `jellymesh-mount`, in its own container. It is
-  the only piece holding `/dev/fuse` and `CAP_SYS_ADMIN`. It serves a
-  read-only tree built from a manifest the materializer writes, in place of
-  the `.strm` files and NFOs written today. The tree holds the films, their
-  NFOs, posters, and subtitles, with the same names, layout, grouping,
-  identity, and pins as section 9. Listings, sizes, and small files come
-  from that local manifest, so a library scan never waits on a source. Only
-  film bytes are fetched.
-- **Film bytes** come from the Jellymesh daemon over a local socket. The
-  daemon fetches from the source through the existing media route, so the
-  source still authorizes every request, and the per-destination ceiling and
-  the head cache still apply. It fetches in 1 MiB chunks into a bounded
-  cache, and reads ahead only once reading is sequential (doubling up to 16
-  chunks), so a probe costs about 1 MB and playback is not paced by round
-  trips.
+- **Descriptors in place of `.strm`.** The materializer writes the same
+  generated root as for `.strm`, with the same layout, grouping, identity,
+  pins, NFOs, posters, and subtitles. Each film's `.strm` becomes a small
+  descriptor, `<film>.<ext>.jmfilm` (package `filmfile`), holding the
+  item's reference, the film's size and average bitrate, and the
+  modification time to show. Nothing in it is an address or a credential.
+  Sources now send each item's file size, bitrate, and extension in the
+  catalog, never its path; for a source that does not, the destination asks
+  with a bodiless request. A film whose size cannot be learned is not shown.
+  The time stays put while the film is unchanged, because Jellyfin probes a
+  film again whenever it moves (C-FS-1).
+- **A small mount process**, `jellymesh mount`, in its own container: the
+  only piece holding `/dev/fuse` and `CAP_SYS_ADMIN`, and holding no key,
+  token, or address. It shows the generated root read-only, each descriptor
+  as its film, and hides descriptors and the materializer's temporary
+  files. Listings, sizes, and small files come from local disk, so a library
+  scan never waits on a source, and a change on disk shows within the
+  kernel's cache time (a minute) without a remount (C-FS-2). Inode numbers
+  are the mount's own, per path, because a disk reuses a deleted file's
+  number.
+- **Film bytes** come from the daemon's read service (package `filmread`)
+  over a local socket that only the daemon's user and root can open. It
+  fetches from the source through the existing media route, so the source
+  still authorizes every fetch and the per-destination ceiling and direct
+  paths apply. It fetches 1 MiB chunks into a bounded cache (256 MiB by
+  default, `JELLYMESH_READ_CACHE_MB`), and reads ahead only once reading is
+  sequential (doubling up to 16 chunks), so a probe costs about 1 MB and
+  playback is not paced by round trips (C-FS-3). The relay's head cache is
+  not used: Jellyfin probes a file only at scan time, not on every
+  PlaybackInfo as it does a `.strm`.
+- **Authorization.** Every read resolves the reference and asks the
+  destination's policy, cached chunk or not, so a revocation, a block, or
+  an opt-out stops reads at once. A chunk is served for at most a minute
+  after it was fetched, which bounds how long a refusal at the source can
+  go unseen (C-FS-4).
 - **Mount propagation.** The mount reaches Jellyfin's container through a
   bind with slave propagation, so a remount appears there without
   restarting Jellyfin.
 
 **Robustness.** Each point was proven by the spike's gates:
 
-- Every read has a hard deadline (10 s in the spike) and fails with an I/O
-  error, never a hang (G1).
+- Every read has a hard deadline (10 s) and fails with an I/O error, never
+  a hang (G1, C-FS-3).
 - The mount asks the kernel for a request timeout (`FUSE_REQUEST_TIMEOUT`,
   20 s). If the process itself deadlocks or freezes, the kernel aborts the
   connection instead of leaving Jellyfin threads in uninterruptible sleep
-  (G1). go-fuse 2.11 does not send the timeout, so the spike patches it, and
-  the change should go upstream. The kernel feature is recent: FUSE mode
-  must refuse to run on a kernel without it.
+  (G1, C-FS-7). go-fuse 2.11 does not send the timeout, so Jellymesh carries
+  a patched copy in `third_party/go-fuse` (#65) until the change is
+  upstream. The kernel feature is recent (Linux 6.14): the mount refuses to
+  run on a kernel without it. The kernel checks for expired requests every
+  15 s, so a frozen mount fails its callers within the timeout plus 15 s.
 - A watchdog reads a direct-I/O health file through the mount every 5 s. If
   the mount stops answering, the process exits; the container's restart
   policy starts it again, and startup detaches the dead mount (G1, G5).
 - An absent or dead mount reads as an inaccessible library root, and
   Jellyfin keeps the items. In the spike no scenario lost an item or a
   watched state (G2).
-- If a film's probe read fails, it is retried in the background. Once it is
-  readable again its modification time moves forward an hour, so the next
-  scan probes it. Jellyfin ignores a one-second change (G2-E).
+- If a film's read fails, the read service records it, as does the mount
+  when its deadline passes, and retries it every 10 s. Once it is readable
+  again the materializer moves its descriptor's time forward an hour, so the
+  next scan probes it; Jellyfin ignores a one-second change (G2-E). The
+  record survives a restart (C-FS-5).
 - Film contents are served only to Jellyfin's uid. Every other process sees
   names and sizes but cannot read, so backups, indexers, and file shares
   cannot pull films (G3). Jellyfin must therefore run as a dedicated uid.

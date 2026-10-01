@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -68,6 +69,17 @@ type Metadata struct {
 	// copies beside its reference because Jellyfin must find them on disk.
 	Subtitles       []Subtitle `json:"subtitles,omitempty"`
 	HasPrimaryImage bool       `json:"has_primary_image,omitempty"`
+	// File describes the media file the item streams, which a destination
+	// presenting films as files needs before it reads a byte (A-17).
+	File *File `json:"file,omitempty"`
+}
+
+// File is what a destination learns about an item's media file: its size,
+// average bitrate, and file name extension, and nothing of its path.
+type File struct {
+	Size      int64  `json:"size"`
+	Bitrate   int64  `json:"bitrate,omitempty"`
+	Extension string `json:"extension,omitempty"`
 }
 
 // Subtitle describes one external subtitle of an item.
@@ -342,6 +354,7 @@ func normalize(item jellyfin.Item) (string, string, error) {
 		CommunityRating: item.CommunityRating, CriticRating: item.CriticRating, IndexNumber: item.IndexNumber, ParentIndexNumber: item.ParentIndexNumber,
 		SeriesID: item.SeriesID, SeasonID: item.SeasonID,
 		Subtitles: externalSubtitles(item), HasPrimaryImage: item.ImageTags["Primary"] != "",
+		File: mediaFile(item),
 	})
 	if err != nil {
 		return "", "", err
@@ -593,6 +606,27 @@ func externalSubtitles(item jellyfin.Item) []Subtitle {
 	}
 	return subtitles
 }
+
+// mediaFile describes the item's own file, the first media source, which the
+// stream route serves. The extension comes from the path, lower-cased, and
+// is sent only if it is a short alphanumeric one.
+func mediaFile(item jellyfin.Item) *File {
+	if len(item.MediaSources) == 0 || item.MediaSources[0].Size <= 0 {
+		return nil
+	}
+	source := item.MediaSources[0]
+	file := &File{Size: source.Size, Bitrate: source.Bitrate}
+	extension := strings.ToLower(strings.TrimPrefix(path.Ext(item.Path), "."))
+	if extension == "" {
+		extension = strings.ToLower(strings.Split(source.Container, ",")[0])
+	}
+	if extensionPattern.MatchString(extension) {
+		file.Extension = extension
+	}
+	return file
+}
+
+var extensionPattern = regexp.MustCompile(`^[a-z0-9]{1,5}$`)
 
 // ItemMetadata returns the metadata the catalog holds for a live item, after
 // authorizing it against live state.

@@ -207,6 +207,20 @@ func (access sourceAccess) fetch(ctx context.Context, sourceID string, path stri
 }
 
 // Subtitle satisfies materialize.Fetcher.
+// Size finds a film's size with a bodiless request, for a source whose
+// catalog does not carry it.
+func (access sourceAccess) Size(ctx context.Context, sourceID string, itemID string) (int64, error) {
+	response, err := access.Media(ctx, sourceID, http.MethodHead, itemID, http.Header{})
+	if err != nil {
+		return 0, err
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || response.ContentLength <= 0 {
+		return 0, fmt.Errorf("the source answered %d with no length", response.StatusCode)
+	}
+	return response.ContentLength, nil
+}
+
 func (access sourceAccess) Subtitle(ctx context.Context, sourceID string, itemID string, index int) ([]byte, error) {
 	path, err := access.path("subtitles", itemID, strconv.Itoa(index))
 	if err != nil {
@@ -236,6 +250,15 @@ func (n *Node) RelayHandler() (http.Handler, error) {
 		server.SetHeadCache(n.heads)
 	}
 	return server.Handler(), nil
+}
+
+// ReadHandler serves the mount film bytes over the local read socket, or is
+// nil unless films are presented through the mount (A-17).
+func (n *Node) ReadHandler() http.Handler {
+	if n.reads == nil {
+		return nil
+	}
+	return n.reads.Handler()
 }
 
 // Materialize brings the generated root into line with what this node may

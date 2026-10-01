@@ -80,7 +80,12 @@ type NamedItem struct {
 
 // MediaSource is one playable source of an item.
 type MediaSource struct {
-	ID           string        `json:"Id"`
+	ID string `json:"Id"`
+	// Size, in bytes, and Bitrate, in bits a second, are of the file the
+	// stream route serves. Container is Jellyfin's name for its format.
+	Size         int64         `json:"Size,omitempty"`
+	Bitrate      int64         `json:"Bitrate,omitempty"`
+	Container    string        `json:"Container,omitempty"`
 	MediaStreams []MediaStream `json:"MediaStreams,omitempty"`
 }
 

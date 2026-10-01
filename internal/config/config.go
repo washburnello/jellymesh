@@ -87,6 +87,16 @@ type Config struct {
 	// DirectCandidates are further addresses to offer peers, such as this
 	// host's LAN address for members on the same network.
 	DirectCandidates []string
+	// Presentation is how remote items reach Jellyfin (A-17): "strm", a
+	// .strm naming the relay for each item, or "fuse", a film descriptor the
+	// mount (jellymesh mount) shows as the film itself.
+	Presentation string
+	// ReadSocket is the local socket the mount reads film bytes through,
+	// served only in "fuse" presentation. ReadCacheBytes bounds the read
+	// service's chunk cache.
+	ReadSocket     string
+	ReadCacheBytes int64
+
 	// DirectOfferLocal offers the direct socket's own address and accepts
 	// loopback addresses in offers. It exists for nodes on one host, as in
 	// tests; it is never read from the environment.
@@ -183,6 +193,20 @@ func FromLookup(lookup func(string) (string, bool)) (Config, error) {
 	}
 	cfg.HeadCacheBytes = megabytes << 20
 
+	switch cfg.Presentation = valueOrDefault(lookup, "JELLYMESH_PRESENTATION", PresentStrm); cfg.Presentation {
+	case PresentStrm, PresentFUSE:
+	default:
+		return Config{}, fmt.Errorf("JELLYMESH_PRESENTATION must be %q or %q", PresentStrm, PresentFUSE)
+	}
+	if cfg.ReadSocket, err = absolutePath(lookup, "JELLYMESH_READ_SOCKET", "/run/jellymesh/read.sock"); err != nil {
+		return Config{}, err
+	}
+	readCache, err := strconv.ParseInt(valueOrDefault(lookup, "JELLYMESH_READ_CACHE_MB", "256"), 10, 64)
+	if err != nil || readCache < 32 {
+		return Config{}, fmt.Errorf("JELLYMESH_READ_CACHE_MB must be a whole number of megabytes, at least 32")
+	}
+	cfg.ReadCacheBytes = readCache << 20
+
 	if direct := valueOrDefault(lookup, "JELLYMESH_DIRECT_LISTEN_ADDR", "0.0.0.0:44843"); direct != "off" {
 		if _, _, err := net.SplitHostPort(direct); err != nil {
 			return Config{}, fmt.Errorf("invalid JELLYMESH_DIRECT_LISTEN_ADDR (host:port, or off): %w", err)
@@ -216,6 +240,12 @@ func FromLookup(lookup func(string) (string, bool)) (Config, error) {
 
 	return cfg, nil
 }
+
+// Presentations (Config.Presentation).
+const (
+	PresentStrm = "strm"
+	PresentFUSE = "fuse"
+)
 
 func splitList(value string) []string {
 	var out []string
