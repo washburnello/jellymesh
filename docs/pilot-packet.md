@@ -157,6 +157,23 @@ setting).
 **Check:** play one of the shared films. Try seeking and subtitles. After
 playing, `status` → `direct.peers` shows `direct` or `tcp` for our node.
 
+### Optional: films as files, for the Roku and similar apps
+
+By default each shared film reaches your Jellyfin as a `.strm` link. Apps
+that play the link themselves, the Jellyfin Roku app among them, cannot
+play it. On a Linux host you can instead have shared films appear as
+ordinary files, which every app plays. It needs one more small container
+and a kernel from 2025 or later. `docs/operator-fuse.md` covers it.
+
+**Check first:**
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.fuse.yml run --rm jellymesh-mount mount -check
+```
+
+Switch only if every line says `ok`. Watch history carries over when you
+switch.
+
 ## 10. Reporting back, updates, and stopping
 
 **What to send us:**

@@ -20,7 +20,7 @@ behaviours are Jellyfin's, not Jellymesh's.
 Playing a remote film, 2026-09-29, against Jellyfin 10.11.11 (M-1, M-11,
 #60 G4):
 
-| Client | Remote film as `.strm` (today) | Remote film through FUSE (spike) |
+| Client | Remote film as `.strm` | Remote film through FUSE (spike #60; the build's own run on devices, G4 of #73, is pending) |
 |---|---|---|
 | Jellyfin Web | Plays | Plays |
 | iPhone, iPad (Jellyfin app) | Plays, seeks, resumes | Plays, seeks, resumes |
