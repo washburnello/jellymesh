@@ -7,13 +7,13 @@
 #   env.sh build    rebuild the images only
 #
 # Containers (network fuselab):
-#   fl-src-jf    the source's Jellyfin, holding the films (hard links)
-#   fl-proxy     between the source node and its Jellyfin: counts media bytes
-#                and injects faults; control on 127.0.0.1:18310
-#   fl-src       the source node, publishing the films
-#   fl-dst       the destination node, JELLYMESH_PRESENTATION=fuse
-#   fl-mount     jellymesh mount: the only container with /dev/fuse
-#   fl-dst-jf    the destination's Jellyfin as uid 7777, on 127.0.0.1:18230
+#   $LAB-src-jf    the source's Jellyfin, holding the films (hard links)
+#   $LAB-proxy     between the source node and its Jellyfin: counts media bytes
+#                and injects faults; control on 127.0.0.1:$PROXY_PORT
+#   $LAB-src       the source node, publishing the films
+#   $LAB-dst       the destination node, JELLYMESH_PRESENTATION=fuse
+#   $LAB-mount     jellymesh mount: the only container with /dev/fuse
+#   $LAB-dst-jf    the destination's Jellyfin as uid 7777, on 127.0.0.1:$DST_PORT
 #                and the LAN, reading the films through the mount
 #
 # The mount is made at $BASE/share/films under an rshared bind, and reaches
@@ -21,6 +21,15 @@
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
+# LAB names a second, independent instance (containers "$LAB-*"), with its
+# own ports and network; PRESENTATION starts the destination in "strm"
+# instead, for the migration test (M-14, migrate.py).
+LAB=${LAB:-fl}
+NET=${NET:-fuselab}
+SRC_PORT=${SRC_PORT:-18220}
+DST_PORT=${DST_PORT:-18230}
+PROXY_PORT=${PROXY_PORT:-18310}
+PRESENTATION=${PRESENTATION:-fuse}
 BASE=${FUSELAB_BASE:-$HOME/.local/share/jellymesh-fuselab}
 FILMS=${FILMS:-$HOME/Videos/Back to the Future}
 SYNTHETIC=${SYNTHETIC:-30}
@@ -33,8 +42,8 @@ present_ips() {
   for ip in $LAN_IPS; do grep -qx "$ip" <<<"$held" && printf '%s ' "$ip"; done
 }
 json() { python3 -c "import json,sys; $1"; }
-src_jm() { docker exec fl-src /jellymesh "$@"; }
-dst_jm() { docker exec fl-dst /jellymesh "$@"; }
+src_jm() { docker exec $LAB-src /jellymesh "$@"; }
+dst_jm() { docker exec $LAB-dst /jellymesh "$@"; }
 
 build() {
   docker build -q -t jellymesh:fuselab "$root" >/dev/null
@@ -69,61 +78,64 @@ PY
 }
 
 start_mount() {
-  docker run -d --name fl-mount --restart unless-stopped --user 0:0 --network none \
+  docker run -d --name $LAB-mount --restart unless-stopped --user 0:0 --network none \
     --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined --memory 256m \
     --mount "type=bind,src=$BASE/share,dst=/share,bind-propagation=rshared" \
-    -v "$BASE/generated:/generated:ro" -v fl-run:/run/jellymesh \
+    -v "$BASE/generated:/generated:ro" -v $LAB-run:/run/jellymesh \
     -e JELLYMESH_MOUNT_POINT=/share/films -e JELLYMESH_MOUNT_ALLOW_UIDS=$JF_UID -e JELLYMESH_MOUNT_TEST_FAULTS=1 \
     --no-healthcheck jellymesh:fuselab mount >/dev/null
 }
 
 start_dst() {
-  docker run -d --name fl-dst --restart unless-stopped --network fuselab --memory 1g -e GOMEMLIMIT=600MiB \
-    -v fl-dst-data:/data -v fl-run:/run/jellymesh -v "$BASE/generated:/generated" \
-    -e JELLYMESH_NODE_NAME=dst -e JELLYMESH_PUBLIC_HOSTNAME=fl-dst:8443 -e JELLYMESH_DIRECT_LISTEN_ADDR=off \
-    -e JELLYMESH_JELLYFIN_URL=http://fl-dst-jf:8096 -e JELLYMESH_JELLYFIN_USER=jellymesh \
+  docker run -d --name $LAB-dst --restart unless-stopped --network $NET --memory 1g -e GOMEMLIMIT=600MiB \
+    -v $LAB-dst-data:/data -v $LAB-run:/run/jellymesh -v "$BASE/generated:/generated" \
+    -e JELLYMESH_NODE_NAME=dst -e JELLYMESH_PUBLIC_HOSTNAME=$LAB-dst:8443 -e JELLYMESH_DIRECT_LISTEN_ADDR=off \
+    -e JELLYMESH_JELLYFIN_URL=http://$LAB-dst-jf:8096 -e JELLYMESH_JELLYFIN_USER=jellymesh \
     -e JELLYMESH_JELLYFIN_PASSWORD="$(python3 "$here/setup.py" service "$BASE" destination)" \
-    -e JELLYMESH_GENERATED_ROOT=/generated -e JELLYMESH_PRESENTATION=fuse jellymesh:fuselab >/dev/null
+    -e JELLYMESH_GENERATED_ROOT=/generated -e JELLYMESH_PRESENTATION=$PRESENTATION \
+    -e JELLYMESH_RELAY_LISTEN_ADDR=0.0.0.0:8090 -e JELLYMESH_RELAY_URL=http://$LAB-dst:8090 \
+    -e JELLYMESH_RELAY_ALLOWED_CLIENTS=172.16.0.0/12,192.168.0.0/16 jellymesh:fuselab >/dev/null
 }
 
 start_dst_jf() {
-  docker run -d --name fl-dst-jf --restart unless-stopped --network fuselab --user "$JF_UID:$JF_UID" --memory 2g \
-    -p 127.0.0.1:18230:8096 $(for ip in $(present_ips); do printf -- '-p %s:18230:8096 ' "$ip"; done) \
-    -v fl-dst-jf-config:/config -v fl-dst-jf-cache:/cache \
-    --mount "type=bind,src=$BASE/share,dst=/remote,readonly,bind-propagation=rslave" jellyfin/jellyfin:10.11.11 >/dev/null
+  docker run -d --name $LAB-dst-jf --restart unless-stopped --network $NET --user "$JF_UID:$JF_UID" --memory 2g \
+    -p 127.0.0.1:$DST_PORT:8096 $(for ip in $(present_ips); do printf -- "-p %s:$DST_PORT:8096 " "$ip"; done) \
+    -v $LAB-dst-jf-config:/config -v $LAB-dst-jf-cache:/cache \
+    --mount "type=bind,src=$BASE/share,dst=/remote,readonly,bind-propagation=rslave" -v "$BASE/generated:/generated:ro" \
+    jellyfin/jellyfin:10.11.11 >/dev/null
 }
 
 up() {
   build
   mkdir -p "$BASE/state" "$BASE/share" "$BASE/generated"
   media
-  docker network create fuselab >/dev/null
+  docker network create $NET >/dev/null
   # The node writes the generated root as uid 65532; Jellyfin's volumes are 7777's.
-  docker volume create fl-dst-jf-config >/dev/null; docker volume create fl-dst-jf-cache >/dev/null
-  docker run --rm -v "$BASE/generated:/g" -v fl-dst-jf-config:/c -v fl-dst-jf-cache:/k alpine:3 \
+  docker volume create $LAB-dst-jf-config >/dev/null; docker volume create $LAB-dst-jf-cache >/dev/null
+  docker run --rm -v "$BASE/generated:/g" -v $LAB-dst-jf-config:/c -v $LAB-dst-jf-cache:/k alpine:3 \
     sh -c "chown 65532:65532 /g && chown -R $JF_UID:$JF_UID /c /k" >/dev/null
 
-  docker run -d --name fl-src-jf --restart unless-stopped --network fuselab --user "$(id -u):$(id -g)" --memory 2g \
-    -p 127.0.0.1:18220:8096 -v fl-src-jf-config:/config -v "$BASE/media/Movies:/media/movies:ro" jellyfin/jellyfin:10.11.11 >/dev/null
-  python3 "$here/setup.py" source http://127.0.0.1:18220 "$BASE"
-  docker run -d --name fl-proxy --restart unless-stopped --network fuselab -p 127.0.0.1:18310:8300 fuselab-proxy:latest >/dev/null
-  docker run -d --name fl-src --restart unless-stopped --network fuselab -v fl-src-data:/data \
-    -e JELLYMESH_NODE_NAME=src -e JELLYMESH_PUBLIC_HOSTNAME=fl-src:8443 -e JELLYMESH_DIRECT_LISTEN_ADDR=off \
+  docker run -d --name $LAB-src-jf --restart unless-stopped --network $NET --user "$(id -u):$(id -g)" --memory 2g \
+    -p 127.0.0.1:$SRC_PORT:8096 -v $LAB-src-jf-config:/config -v "$BASE/media/Movies:/media/movies:ro" jellyfin/jellyfin:10.11.11 >/dev/null
+  python3 "$here/setup.py" source http://127.0.0.1:$SRC_PORT "$BASE"
+  docker run -d --name $LAB-proxy --restart unless-stopped --network $NET -p 127.0.0.1:$PROXY_PORT:8300 fuselab-proxy:latest -target http://$LAB-src-jf:8096 >/dev/null
+  docker run -d --name $LAB-src --restart unless-stopped --network $NET -v $LAB-src-data:/data \
+    -e JELLYMESH_NODE_NAME=src -e JELLYMESH_PUBLIC_HOSTNAME=$LAB-src:8443 -e JELLYMESH_DIRECT_LISTEN_ADDR=off \
     -e JELLYMESH_UPLOAD_CEILING_MBPS=0 \
-    -e JELLYMESH_JELLYFIN_URL=http://fl-proxy:8096 -e JELLYMESH_JELLYFIN_USER=jellymesh \
+    -e JELLYMESH_JELLYFIN_URL=http://$LAB-proxy:8096 -e JELLYMESH_JELLYFIN_USER=jellymesh \
     -e JELLYMESH_JELLYFIN_PASSWORD="$(python3 "$here/setup.py" service "$BASE" source)" jellymesh:fuselab >/dev/null
 
   start_dst_jf
-  python3 "$here/setup.py" destination http://127.0.0.1:18230 "$BASE"
+  python3 "$here/setup.py" destination http://127.0.0.1:$DST_PORT "$BASE"
   start_dst
-  start_mount
+  [ "$PRESENTATION" = fuse ] && start_mount
   for _ in $(seq 1 30); do src_jm status >/dev/null 2>&1 && dst_jm status >/dev/null 2>&1 && break; sleep 1; done
 
   dst_jm found fuselab >/dev/null
   library=$(src_jm libraries | json 'print([l.get("id") or l.get("Id") for l in json.load(sys.stdin) if (l.get("name") or l.get("Name"))=="Movies"][0])')
   src_jm publish "$library" -root /media/movies >/dev/null
   code=$(dst_jm invite -valid-for 1h | json 'print(json.load(sys.stdin)["short_code"])')
-  src_jm join -address fl-dst:8443 -code "$code" -wait 2m >"$BASE/state/join.log" 2>&1 &
+  src_jm join -address $LAB-dst:8443 -code "$code" -wait 2m >"$BASE/state/join.log" 2>&1 &
   join=$!
   for _ in $(seq 1 20); do
     requests=$(dst_jm requests)
@@ -134,15 +146,21 @@ up() {
   wait "$join"
   src_jm catalog-sync >/dev/null
   echo "materialized: $(dst_jm catalog-sync | json 'print(json.load(sys.stdin)["materialized"]["Written"])')"
-  for _ in $(seq 1 30); do [ -d "$BASE/share/films/Movies" ] && break; sleep 1; done
-  echo "films in the mount: $(ls "$BASE/share/films/Movies" | wc -l)"
-  python3 "$here/setup.py" libraries http://127.0.0.1:18230 "$BASE"
+  if [ "$PRESENTATION" = fuse ]; then
+    for _ in $(seq 1 30); do [ -d "$BASE/share/films/Movies" ] && break; sleep 1; done
+    echo "films in the mount: $(ls "$BASE/share/films/Movies" | wc -l)"
+  fi
+  if [ "$PRESENTATION" = fuse ]; then
+    python3 "$here/setup.py" libraries http://127.0.0.1:$DST_PORT "$BASE"
+  else
+    LIB_NAME="Jellymesh Movies (strm)" LIB_PATH=/generated/Movies python3 "$here/setup.py" libraries http://127.0.0.1:$DST_PORT "$BASE"
+  fi
 }
 
 down() {
-  docker rm -f fl-dst-jf fl-mount fl-dst fl-src fl-proxy fl-src-jf >/dev/null 2>&1 || true
-  docker volume rm fl-run fl-dst-data fl-src-data fl-src-jf-config fl-dst-jf-config fl-dst-jf-cache >/dev/null 2>&1 || true
-  docker network rm fuselab >/dev/null 2>&1 || true
+  docker rm -f $LAB-dst-jf $LAB-mount $LAB-dst $LAB-src $LAB-proxy $LAB-src-jf >/dev/null 2>&1 || true
+  docker volume rm $LAB-run $LAB-dst-data $LAB-src-data $LAB-src-jf-config $LAB-dst-jf-config $LAB-dst-jf-cache >/dev/null 2>&1 || true
+  docker network rm $NET >/dev/null 2>&1 || true
   # A dead mount can outlive its container; detach it from a privileged helper,
   # and remove what uid 65532 and 7777 own.
   if [ -d "$BASE" ]; then
@@ -159,5 +177,6 @@ case "${1:-}" in
   build) build ;;
   start_mount) start_mount ;;
   start_dst) start_dst ;;
+  sync) src_jm catalog-sync >/dev/null; dst_jm catalog-sync ;;
   *) echo "usage: env.sh up|down|build"; exit 2 ;;
 esac

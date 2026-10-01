@@ -90,12 +90,14 @@ def destination(url, base):
 
 
 def libraries(url, base):
+    name = os.environ.get("LIB_NAME", "Jellymesh Movies")
+    path = os.environ.get("LIB_PATH", "/remote/films/Movies")
     jf = Jellyfin(url, secrets_file(base)["destination"]["token"])
-    if not any(l["Name"] == "Jellymesh Movies" for l in jf.call("GET", "/Library/VirtualFolders")):
-        jf.call("POST", "/Library/VirtualFolders", {"name": "Jellymesh Movies", "collectionType": "movies",
-                                                    "paths": ["/remote/films/Movies"], "refreshLibrary": "false"}, {"LibraryOptions": OPTIONS})
+    if not any(l["Name"] == name for l in jf.call("GET", "/Library/VirtualFolders")):
+        jf.call("POST", "/Library/VirtualFolders", {"name": name, "collectionType": "movies",
+                                                    "paths": [path], "refreshLibrary": "false"}, {"LibraryOptions": OPTIONS})
     seconds, status = jf.scan()
-    print(f"destination: scanned in {seconds} s ({status}); {len(jf.items('Jellymesh Movies'))} films")
+    print(f"destination: scanned in {seconds} s ({status}); {len(jf.items(name))} films in {name}")
 
 
 if __name__ == "__main__":
