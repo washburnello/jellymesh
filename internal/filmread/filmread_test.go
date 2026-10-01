@@ -318,3 +318,93 @@ func TestAnAbandonedReadEndsWithItsRequest(t *testing.T) {
 		t.Fatalf("a later read: %d", status)
 	}
 }
+
+// pacedFixture records pacing waits on a fake clock instead of sleeping.
+func pacedFixture(t *testing.T, size int) (*fixture, *time.Duration) {
+	t.Helper()
+	waited := new(time.Duration)
+	f := newFixture(t, size, Options{})
+	f.server.options.sleep = func(_ context.Context, wait time.Duration) error {
+		*waited += wait
+		f.now.Add(int64(wait))
+		return nil
+	}
+	return f, waited
+}
+
+func (f *fixture) readPaced(t *testing.T, offset int64, length int, bitrate int64) int {
+	t.Helper()
+	url := fmt.Sprintf("%s/v1/films/%s?offset=%d&length=%d&size=%d&bitrate=%d", f.http.URL, reference, offset, length, len(f.content), bitrate)
+	response, err := http.Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, response.Body)
+	response.Body.Close()
+	return response.StatusCode
+}
+
+// C-FS-10: a film read straight through, as extraction does, runs at full
+// speed for the burst and then at PaceMultiple times its bitrate.
+func TestAWholeFilmReadIsPacedPastTheBurst(t *testing.T) {
+	const bitrate = 8 << 20 // 8 Mbit/s: 1 MiB/s, so 4 MiB/s paced and a 600 MiB burst
+	size := 640 << 20
+	f, waited := pacedFixture(t, size)
+	for offset := int64(0); offset < int64(size); offset += 4 * ChunkSize {
+		if status := f.readPaced(t, offset, 4*ChunkSize, bitrate); status != http.StatusOK {
+			t.Fatalf("read at %d: %d", offset, status)
+		}
+		if offset < 590<<20 && *waited > 0 {
+			t.Fatalf("a read inside the burst waited (at %d MiB)", offset>>20)
+		}
+	}
+	// 40 MiB past the burst at 4 MiB/s, less what refilled meanwhile.
+	if *waited < 9*time.Second || *waited > 10*time.Second {
+		t.Fatalf("40 MiB past the burst waited %s, want about 10 s", *waited)
+	}
+	if f.server.Stats().Paced != *waited {
+		t.Fatalf("paced time is counted: %s", f.server.Stats().Paced)
+	}
+}
+
+// C-FS-10: playback, reading at the film's own pace, and a film without a
+// known bitrate are never slowed; a low bitrate is paced no slower than
+// PaceFloor, so one read never waits near the mount's deadline.
+func TestPlaybackIsNeverPaced(t *testing.T) {
+	const bitrate = 2_000_000
+	size := 400 << 20
+	f, waited := pacedFixture(t, size)
+	perSecond := int64(bitrate / 8)
+	// Two hours' worth at real time, with a seek back and a seek ahead.
+	offset := int64(0)
+	for second := 0; second < 1600; second++ {
+		f.readPaced(t, offset%int64(size-int(perSecond)), int(perSecond), bitrate)
+		offset += perSecond
+		if second == 600 {
+			offset -= 200 << 20 / 4
+		}
+		f.now.Add(int64(time.Second))
+	}
+	if *waited != 0 {
+		t.Fatalf("playback waited %s", *waited)
+	}
+
+	unknown, unknownWaited := pacedFixture(t, 300<<20)
+	for offset := int64(0); offset < 300<<20; offset += 4 * ChunkSize {
+		unknown.readPaced(t, offset, 4*ChunkSize, 0)
+	}
+	if *unknownWaited != 0 {
+		t.Fatalf("a film without a bitrate was paced: %s", *unknownWaited)
+	}
+
+	slow, slowWaited := pacedFixture(t, 80<<20)
+	worst := time.Duration(0)
+	for offset := int64(0); offset < 80<<20; offset += ChunkSize {
+		before := *slowWaited
+		slow.readPaced(t, offset, ChunkSize, 64_000) // 64 kbit/s
+		worst = max(worst, *slowWaited-before)
+	}
+	if *slowWaited == 0 || worst > time.Second+time.Millisecond {
+		t.Fatalf("a low bitrate past its burst: waited %s in all, %s at worst", *slowWaited, worst)
+	}
+}

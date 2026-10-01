@@ -49,6 +49,19 @@ const (
 	FetchTimeout = 30 * time.Second
 	// HealInterval is how often films whose read failed are retried.
 	HealInterval = 10 * time.Second
+
+	// PaceMultiple, PaceBurst, and PaceFloor guard against a whole film
+	// being pulled at once, as trickplay or chapter image extraction would
+	// do (A-17, #69). Each film may be read at full speed for PaceBurst of
+	// play at its average bitrate (at least MinBurstBytes); past that, reads
+	// are paced to PaceMultiple times its bitrate, never slower than
+	// PaceFloor, so one read never waits near the mount's deadline.
+	// Playback and transcoding need no more than real time, so they are
+	// never slowed; an extraction costs about what a few viewers would.
+	PaceMultiple  = 4
+	PaceBurst     = 10 * time.Minute
+	MinBurstBytes = 64 << 20
+	PaceFloor     = 1 << 20 // bytes a second
 )
 
 var referencePattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
@@ -66,14 +79,17 @@ type Options struct {
 	// that its modification time can move on and Jellyfin probe it again.
 	Healed func(ctx context.Context, reference string) error
 	Logger *log.Logger
-	// now is the clock, which tests replace.
-	now func() time.Time
+	// now is the clock, and sleep waits, which tests replace.
+	now   func() time.Time
+	sleep func(context.Context, time.Duration) error
 }
 
 // Stats count what the service has done.
 type Stats struct {
 	Fetched, Served, FetchErrors int64
 	Failed                       int
+	// Paced is how long reads have waited for pacing in all.
+	Paced time.Duration
 }
 
 // Server is the read service.
@@ -93,6 +109,10 @@ type Server struct {
 	reportMutex sync.Mutex
 	report      json.RawMessage
 	reported    time.Time
+
+	paceMutex sync.Mutex
+	paces     map[string]*bucket
+	paced     atomic.Int64 // nanoseconds reads have waited
 }
 
 // New returns a read service.
@@ -106,7 +126,10 @@ func New(options Options) *Server {
 	if options.now == nil {
 		options.now = time.Now
 	}
-	server := &Server{options: options, streaks: map[string]*streak{}, failed: map[string]time.Time{}}
+	if options.sleep == nil {
+		options.sleep = sleep
+	}
+	server := &Server{options: options, streaks: map[string]*streak{}, failed: map[string]time.Time{}, paces: map[string]*bucket{}}
 	server.cache = &cache{chunks: map[chunkKey]*chunk{}, order: list.New(), capacity: int(max(options.CacheBytes/ChunkSize, MaxAhead+2)), fetch: server.fetch, now: options.now}
 	server.loadFailed()
 	return server
@@ -126,7 +149,8 @@ func (server *Server) Stats() Stats {
 	server.failedMutex.Lock()
 	failed := len(server.failed)
 	server.failedMutex.Unlock()
-	return Stats{Fetched: server.fetched.Load(), Served: server.served.Load(), FetchErrors: server.fetchErrors.Load(), Failed: failed}
+	return Stats{Fetched: server.fetched.Load(), Served: server.served.Load(), FetchErrors: server.fetchErrors.Load(), Failed: failed,
+		Paced: time.Duration(server.paced.Load())}
 }
 
 // mountReport keeps the mount's latest report, for status.
@@ -156,6 +180,9 @@ func (server *Server) Forget(reference string) {
 	server.streakMutex.Lock()
 	delete(server.streaks, reference)
 	server.streakMutex.Unlock()
+	server.paceMutex.Lock()
+	delete(server.paces, reference)
+	server.paceMutex.Unlock()
 	server.failedMutex.Lock()
 	_, was := server.failed[reference]
 	delete(server.failed, reference)
@@ -206,6 +233,14 @@ func (server *Server) read(response http.ResponseWriter, request *http.Request) 
 	}
 	if offset+length > size {
 		length = size - offset
+	}
+	if bitrate, err := strconv.ParseInt(query.Get("bitrate"), 10, 64); err == nil && bitrate > 0 {
+		if wait := server.pace(reference, bitrate, length); wait > 0 {
+			server.paced.Add(int64(wait))
+			if server.options.sleep(request.Context(), wait) != nil {
+				return // the mount gave up
+			}
+		}
 	}
 	item := target{record: record, size: size}
 	out := make([]byte, 0, length)
@@ -275,6 +310,60 @@ func (server *Server) fetch(item target, index int64) ([]byte, error) {
 	}
 	server.fetched.Add(int64(len(data)))
 	return data, nil
+}
+
+// bucket paces one film: tokens are bytes that may be read now, refilled at
+// rate up to burst, and may go negative, which is the wait.
+type bucket struct {
+	tokens, rate, burst float64
+	last                time.Time
+}
+
+// pace takes length bytes from a film's bucket and returns how long the
+// read must wait.
+func (server *Server) pace(reference string, bitrate int64, length int64) time.Duration {
+	now := server.options.now()
+	rate := max(float64(bitrate)/8*PaceMultiple, PaceFloor)
+	burst := max(float64(bitrate)/8*PaceBurst.Seconds(), MinBurstBytes)
+	server.paceMutex.Lock()
+	defer server.paceMutex.Unlock()
+	current := server.paces[reference]
+	if current == nil {
+		if len(server.paces) >= 4096 {
+			server.prunePaces(now)
+		}
+		current = &bucket{tokens: burst, last: now}
+		server.paces[reference] = current
+	}
+	current.rate, current.burst = rate, burst
+	current.tokens = min(current.burst, current.tokens+now.Sub(current.last).Seconds()*current.rate)
+	current.last = now
+	current.tokens -= float64(length)
+	if current.tokens >= 0 {
+		return 0
+	}
+	return time.Duration(-current.tokens / current.rate * float64(time.Second))
+}
+
+// prunePaces forgets films whose buckets have refilled, which are the same
+// as new ones.
+func (server *Server) prunePaces(now time.Time) {
+	for reference, held := range server.paces {
+		if held.tokens+now.Sub(held.last).Seconds()*held.rate >= held.burst {
+			delete(server.paces, reference)
+		}
+	}
+}
+
+func sleep(ctx context.Context, wait time.Duration) error {
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // streak tracks sequential reading of one film, so that read-ahead starts

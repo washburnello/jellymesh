@@ -1158,26 +1158,36 @@ extraction enabled, the spike's trickplay task pulled 104 MB a minute per
 film, and would have pulled every film whole (G3). Remote films must live in
 their own libraries with extraction off. A non-administrator service user
 cannot read library options (A-8), so Jellymesh cannot verify this itself.
-The proposal is a second line of defence in the mount:
+The read service is a second line of defence (#69, C-FS-10):
 
-- Each film is read at full speed up to a burst.
-- Beyond the burst, reads are paced to a small multiple of the film's
-  average bitrate, which is known from the catalog.
+- Each film is read at full speed for a burst: ten minutes of play at its
+  average bitrate, at least 64 MiB.
+- Beyond the burst, reads are paced to four times the film's average
+  bitrate, which the catalog carries, and never slower than 1 MiB/s, so
+  that no single read waits near the mount's 10 s deadline.
 
-Playback and transcoding need no more than real time. A whole-file
-extraction would then cost no more bandwidth than one viewer. This pacing is
-unproven and must be tested.
+Playback and transcoding need no more than real time, so they never wait:
+a viewer reading at the film's own pace refills the burst faster than it
+drains. A whole-film extraction costs about four viewers' worth of
+bandwidth instead of the source's full uplink. That playback and
+transcoding through Jellyfin are unaffected is to be shown by rerunning G3
+against the build (#73). `jellymesh status` shows the total time reads
+have waited (`reads.paced_seconds`).
 
-**Choosing the mode.** A self-test at setup, and after each update, chooses
-FUSE when the host can run it safely and `.strm` otherwise, telling the
-operator why. The mode is never switched per incident: a switch changes
-every item's path, which Jellyfin sees only at its next scan. The self-test
-checks for `/dev/fuse`, the container's privileges, shared mount propagation
-on the host, and a kernel with request timeouts. How it confirms that the
-mount is visible inside Jellyfin's container is open. Moving an existing
-node from `.strm` to FUSE recreates every generated item at a new path, and
-history reattaches by provider identifier (A-14). That migration must be
-tested.
+**Choosing the mode (A-18).** The operator sets `JELLYMESH_PRESENTATION`,
+`strm` by default, from the self-test, `jellymesh mount -check`, run in the
+mount container at setup and after each update. It reports by name whether
+`/dev/fuse` opens, a filesystem mounts with the container's privileges, the
+kernel offers request timeouts, and the mountpoint's propagation is shared.
+Jellymesh never switches the mode itself, and never per incident: a switch
+changes every item's path, which Jellyfin sees only at its next scan.
+`jellymesh status` shows the mode and the mount's reports, and warns when
+the mount is silent or its propagation would hide remounts. Whether the
+mount is visible inside Jellyfin's container is checked by the operator
+(`docs/operator-fuse.md`), since the service user cannot browse Jellyfin's
+filesystem. Moving an existing node from `.strm` to FUSE recreates every
+generated item at a new path, and history should reattach by provider
+identifier (A-14); M-14 tests it.
 
 **Costs.**
 

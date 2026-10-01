@@ -32,6 +32,9 @@ type ReadStatus struct {
 	FetchErrors  int64 `json:"fetch_errors"`
 	// FailedFilms are films whose read failed, retried until readable.
 	FailedFilms int `json:"failed_films"`
+	// PacedSeconds is how long reads have waited, in all, because a film
+	// was being read much faster than it plays (#69).
+	PacedSeconds float64 `json:"paced_seconds"`
 }
 
 func (n *Node) presentationStatus() PresentationStatus {
@@ -44,7 +47,8 @@ func (n *Node) presentationStatus() PresentationStatus {
 	}
 	status.ReadSocket = n.cfg.ReadSocket
 	stats := n.reads.Stats()
-	status.Reads = &ReadStatus{FetchedBytes: stats.Fetched, ServedBytes: stats.Served, FetchErrors: stats.FetchErrors, FailedFilms: stats.Failed}
+	status.Reads = &ReadStatus{FetchedBytes: stats.Fetched, ServedBytes: stats.Served, FetchErrors: stats.FetchErrors, FailedFilms: stats.Failed,
+		PacedSeconds: stats.Paced.Seconds()}
 	raw, seen := n.reads.MountReport()
 	var report mount.Report
 	if raw == nil || json.Unmarshal(raw, &report) != nil {
