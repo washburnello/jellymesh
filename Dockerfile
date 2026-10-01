@@ -5,7 +5,9 @@
 # (65532), so the /data volume must be writable by that user.
 FROM golang:1.27-alpine AS build
 WORKDIR /src
+# third_party holds the patched go-fuse the module replaces (#65).
 COPY go.mod go.sum ./
+COPY third_party ./third_party
 RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
