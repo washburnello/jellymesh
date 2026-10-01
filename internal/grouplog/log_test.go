@@ -650,3 +650,48 @@ func TestSignaturesAreDomainSeparated(t *testing.T) {
 		t.Fatal("a proposal signature must not verify as an event signature")
 	}
 }
+
+// C-NT-8: a member changes its own advertised address, and every node that
+// replays the log dials the new one; no one can change another member's, an
+// address must be a plain host and port, and a non-member cannot propose.
+func TestAMemberChangesOnlyItsOwnAddress(t *testing.T) {
+	f := newFixture(t)
+	event := f.sequence(t, "birch", KindAddress, AddressBody{MemberID: "birch", PublicHostname: "birch.example.org:10000"})
+	if member, _ := f.log.State().Member("birch"); member.PublicHostname != "birch.example.org:10000" {
+		t.Fatalf("birch's address: %q", member.PublicHostname)
+	}
+	follower := f.follower(t)
+	if member, _ := follower.State().Member("birch"); member.PublicHostname != "birch.example.org:10000" || follower.Head().Hash != event.Hash() {
+		t.Fatalf("a follower's view of birch: %q", member.PublicHostname)
+	}
+	f.sequence(t, "cedar", KindAddress, AddressBody{MemberID: "cedar", PublicHostname: "cedar.example.ts.net:10000"})
+	if member, _ := f.log.State().Member("cedar"); member.PublicHostname != "cedar.example.ts.net:10000" {
+		t.Fatalf("the owner's own address: %q", member.PublicHostname)
+	}
+
+	for _, tc := range []struct {
+		name     string
+		proposer string
+		body     AddressBody
+		want     error
+	}{
+		{"for another member", "birch", AddressBody{MemberID: "spruce", PublicHostname: "evil.example:8443"}, ErrNotAuthorized},
+		{"by the owner for a member", "cedar", AddressBody{MemberID: "spruce", PublicHostname: "evil.example:8443"}, ErrNotAuthorized},
+		{"no port", "birch", AddressBody{MemberID: "birch", PublicHostname: "birch.example.org"}, ErrInvalidAddress},
+		{"a URL", "birch", AddressBody{MemberID: "birch", PublicHostname: "https://birch.example.org:8443/x"}, ErrInvalidAddress},
+		{"port zero", "birch", AddressBody{MemberID: "birch", PublicHostname: "birch.example.org:0"}, ErrInvalidAddress},
+		{"empty", "birch", AddressBody{MemberID: "birch"}, ErrInvalidAddress},
+		{"a non-member", "birch", AddressBody{MemberID: "nobody", PublicHostname: "x.example:1"}, ErrNotMember},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			event := f.next(t, "cedar", KindAddress, f.proposal(t, tc.proposer, KindAddress, tc.body))
+			before := f.log.Head()
+			if _, err := f.log.Append(event); !errors.Is(err, tc.want) {
+				t.Fatalf("error = %v, want %v", err, tc.want)
+			}
+			if f.log.Head() != before {
+				t.Fatal("a refused address change changed the log")
+			}
+		})
+	}
+}

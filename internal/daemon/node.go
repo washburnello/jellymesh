@@ -81,6 +81,11 @@ type Node struct {
 	direct      *directPaths
 	directError string
 
+	// readvertised is when this node last proposed its address, and
+	// addressChange the outcome (#62).
+	readvertised  time.Time
+	addressChange string
+
 	mutex sync.Mutex
 	clock func() time.Time
 	group *groupRuntime
@@ -235,6 +240,7 @@ func (n *Node) attach(ctx context.Context, groupID string, group *membership.Gro
 		return err
 	}
 	group.SetAudit(n.audit)
+	group.SetVet(n.vetProposal(group))
 	inviter := enrollment.NewInviter(n.nodeID, n.identity, n.cfg.PublicAddress(), group, groupID, state, n.policies)
 	inviter.SetAudit(n.audit)
 	watch, found, err := n.watches.Load(ctx, groupID)
@@ -660,6 +666,7 @@ func (n *Node) Run(ctx context.Context, federationListener net.Listener, interva
 			if _, err := n.SyncOnce(ctx); err != nil && !errors.Is(err, ErrNoGroup) {
 				n.logger.Printf("heartbeat: %v", err)
 			}
+			n.readvertise(ctx)
 		}
 	}
 }

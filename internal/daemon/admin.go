@@ -148,6 +148,7 @@ type Status struct {
 	Group         *GroupStatus       `json:"group,omitempty"`
 	Direct        DirectStatus       `json:"direct"`
 	Presentation  PresentationStatus `json:"presentation"`
+	Address       AddressStatus      `json:"address"`
 }
 
 type GroupStatus struct {
@@ -173,7 +174,7 @@ type MemberStatus struct {
 // Status reports the node's identity and, if it has one, its group.
 func (n *Node) Status(ctx context.Context) (Status, error) {
 	status := Status{NodeID: n.nodeID, Fingerprint: n.identity.Fingerprint(), PublicAddress: n.cfg.PublicAddress(), Direct: n.direct.status(),
-		Presentation: n.presentationStatus()}
+		Presentation: n.presentationStatus(), Address: n.addressStatus()}
 	if n.direct == nil {
 		status.Direct.OffReason = "direct paths are turned off"
 		if n.directError != "" {

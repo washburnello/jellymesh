@@ -101,6 +101,26 @@ Nothing to configure for most homes:
 - **Turning it off:** `JELLYMESH_DIRECT_LISTEN_ADDR=off`. Media then always
   uses TCP.
 
+## Changing your address
+
+If your public address changes, or you move from a port forward to Funnel,
+set the new `JELLYMESH_PUBLIC_HOSTNAME` and restart. The node notices that
+the group has another address for it and proposes the new one. The group's
+owner checks that your node answers there with its own key, as at joining,
+and then every member dials the new address. If you are the owner, your
+node tells each member itself, since they only know your old address.
+
+`jellymesh status` shows it under `address`:
+
+| Field | Meaning |
+|---|---|
+| `configured` | The address in your configuration |
+| `in_group` | The address members dial |
+| `change` | The last change: `sequenced`, `queued until the owner is reachable`, or why it was refused |
+
+A refused change is retried every 10 minutes. The usual reason is that the
+new address is not reachable from outside yet: check it as below.
+
 ## Checking
 
 **From outside your network.** Turn off Wi-Fi on a phone and open

@@ -4,7 +4,9 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"net"
 	"sort"
+	"strconv"
 	"strings"
 
 	"jellymesh/internal/group"
@@ -36,6 +38,7 @@ var (
 	ErrFingerprintChanged       = errors.New("node was admitted with a different key; a new key is a new node")
 	ErrNotSuccessor             = errors.New("claimant is not the eligible successor")
 	ErrInsufficientAttestations = errors.New("succession requires attestations from a quorum of members")
+	ErrInvalidAddress           = errors.New("an advertised address must be a host and port")
 )
 
 // Member is an active member of the group, bound to its key.
@@ -386,6 +389,26 @@ func (state *State) validateDecision(sequence uint64, proposal Proposal) (func()
 		}
 		return func() { state.admins[body.MemberID] = sequence }, nil
 
+	case KindAddress:
+		var body AddressBody
+		if err := decodeBody(proposal.Body, &body); err != nil {
+			return nil, err
+		}
+		if !state.IsMember(body.MemberID) {
+			return nil, fmt.Errorf("%w: %q", ErrNotMember, body.MemberID)
+		}
+		if proposerID != body.MemberID {
+			return nil, ErrNotAuthorized
+		}
+		if !ValidAddress(body.PublicHostname) {
+			return nil, ErrInvalidAddress
+		}
+		return func() {
+			member := state.members[body.MemberID]
+			member.PublicHostname = body.PublicHostname
+			state.members[body.MemberID] = member
+		}, nil
+
 	case KindDemote:
 		body, err := state.memberBody(proposal)
 		if err != nil {
@@ -403,6 +426,20 @@ func (state *State) validateDecision(sequence uint64, proposal Proposal) (func()
 		return func() { delete(state.admins, body.MemberID) }, nil
 	}
 	return nil, ErrUnknownKind
+}
+
+// ValidAddress reports whether address is a host and port, with nothing
+// else, that a member may advertise.
+func ValidAddress(address string) bool {
+	if address == "" || len(address) > 255 || strings.ContainsAny(address, " \t\r\n/@?#") {
+		return false
+	}
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || host == "" {
+		return false
+	}
+	number, err := strconv.Atoi(port)
+	return err == nil && number > 0 && number < 65536
 }
 
 // memberBody decodes a MemberBody and requires its member to be active.

@@ -165,6 +165,13 @@ type MemberBody struct {
 	MemberID string `json:"member_id"`
 }
 
+// AddressBody changes the address a member advertises. A member may propose
+// it only for itself.
+type AddressBody struct {
+	MemberID       string `json:"member_id"`
+	PublicHostname string `json:"public_hostname"`
+}
+
 // SuccessionBody carries the attestations that justify a claim.
 type SuccessionBody struct {
 	AbsentOwnerID string        `json:"absent_owner_id"`

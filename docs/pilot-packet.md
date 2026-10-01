@@ -1,7 +1,8 @@
 # Jellymesh pilot: setting up a second household
 
 **Status: draft (#58).** Before sending, the Washburn node must be running
-in a group founded with its public address (see section 8).
+and advertising its public address (see section 8); a node that changes
+its address now tells the group itself (#62).
 
 This packet is written for the person setting up, and for an assistant (such
 as an AI coding agent) working on their behalf. Follow it in order. Every

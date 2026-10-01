@@ -72,6 +72,18 @@ type Group struct {
 	store  LogStore
 	blocks BlockList
 	audit  *audit.Log
+	// vet, when set, checks a proposal against the world before the owner
+	// sequences it, such as that a member's new address answers with its
+	// key. The log's rules are checked as well, always.
+	vet func(ctx context.Context, proposal grouplog.Proposal) error
+}
+
+// SetVet sets the check the owner runs on each proposal before sequencing
+// it.
+func (group *Group) SetVet(vet func(ctx context.Context, proposal grouplog.Proposal) error) {
+	group.mutex.Lock()
+	defer group.mutex.Unlock()
+	group.vet = vet
 }
 
 // SetAudit records changes to the group log to log.
@@ -169,6 +181,16 @@ func (group *Group) Receive(ctx context.Context, event grouplog.Event) (grouplog
 // is durable. If storing fails the event is discarded, which keeps the owner
 // from ever sequencing two different events for one slot.
 func (group *Group) Sequence(ctx context.Context, identity *node.Identity, proposal grouplog.Proposal, now time.Time) (grouplog.Event, error) {
+	// The check may dial out, so it runs before the lock, which
+	// handshakes need.
+	group.mutex.RLock()
+	vet := group.vet
+	group.mutex.RUnlock()
+	if vet != nil {
+		if err := vet(ctx, proposal); err != nil {
+			return grouplog.Event{}, err
+		}
+	}
 	group.mutex.Lock()
 	defer group.mutex.Unlock()
 

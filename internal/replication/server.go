@@ -106,6 +106,31 @@ func (server *Server) Register(_ *http.ServeMux, members *http.ServeMux) {
 	members.HandleFunc("GET "+eventsPath, server.events)
 	members.HandleFunc("POST "+proposalsPath, server.propose)
 	members.HandleFunc("POST "+attestationsPath, server.attest)
+	members.HandleFunc("POST "+eventsPath, server.pushed)
+}
+
+// pushed applies an event a member hands this node, as a member that has
+// just moved does so that others learn its new address (#62). An event
+// carries its own authority (the owner's signature and the hash chain), so
+// it is applied exactly as one pulled would be, and one that does not
+// verify is refused.
+func (server *Server) pushed(response http.ResponseWriter, request *http.Request) {
+	group, ok := server.authorize(response, request)
+	if !ok {
+		return
+	}
+	var event grouplog.Event
+	decoder := json.NewDecoder(io.LimitReader(request.Body, maxProposalBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&event); err != nil {
+		http.Error(response, "malformed event", http.StatusBadRequest)
+		return
+	}
+	if _, err := group.Receive(request.Context(), event); err != nil && !errors.Is(err, grouplog.ErrGap) {
+		http.Error(response, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	response.WriteHeader(http.StatusNoContent)
 }
 
 // attest accepts an absence attestation for this node to hold towards a

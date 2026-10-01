@@ -127,6 +127,15 @@ func (client *Client) Submit(ctx context.Context, owner Peer, groupID string, pr
 	return event, err
 }
 
+// Push hands a peer an event, which it applies as if it had pulled it.
+func (client *Client) Push(ctx context.Context, peer Peer, groupID string, event grouplog.Event) error {
+	body, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	return client.do(ctx, peer, http.MethodPost, "/jellymesh/v1/groups/"+url.PathEscape(groupID)+"/log/events", body, nil)
+}
+
 // SendAttestation delivers this node's absence attestation to the group's
 // eligible successor.
 func (client *Client) SendAttestation(ctx context.Context, successor Peer, groupID string, attestation grouplog.Attestation) error {

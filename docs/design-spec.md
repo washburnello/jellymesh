@@ -570,6 +570,17 @@ An approver's node dials a joiner's advertised address and checks that the
 joiner's key answers there before the admission is signed, so an unreachable
 node is caught at the door.
 
+**A member that moves readvertises (#62, C-NT-8).** An `address` event,
+proposed by a member for itself only and sequenced by the owner, changes the
+address the roster holds. A node proposes its configured address whenever
+the roster has another, at most every 10 minutes. The owner first dials the
+new address and requires the member's key there, as at joining; it skips
+this for its own change, since a node often cannot reach its own public
+address from inside its network. Because members pull the log only from
+addresses they know, the moved node then pushes the event to every other
+member. A pushed event is applied exactly as a pulled one, so it is accepted
+only if its signature and hash chain verify.
+
 **The advertised address arranges connections; media prefers a direct UDP
 path.** Funnel carries every byte through Tailscale's servers, under
 bandwidth limits it does not publish, so it suits control traffic but not

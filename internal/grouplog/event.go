@@ -49,6 +49,8 @@ const (
 	KindPromote    Kind = "promote"
 	KindDemote     Kind = "demote"
 	KindSuccession Kind = "succession"
+	// KindAddress changes the address a member advertises (#62).
+	KindAddress Kind = "address"
 )
 
 // proposalKinds are the kinds whose authority comes from an embedded,
@@ -59,6 +61,7 @@ var proposalKinds = map[Kind]bool{
 	KindLeave:     true,
 	KindPromote:   true,
 	KindDemote:    true,
+	KindAddress:   true,
 }
 
 // Hash is a SHA-256 digest, encoded as lowercase hex on the wire so that log
