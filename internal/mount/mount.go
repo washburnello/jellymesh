@@ -47,10 +47,18 @@ type Reader interface {
 	// Read fills dest from offset, returning fewer bytes only at the end of
 	// the film. It must honour ctx.
 	Read(ctx context.Context, film filmfile.Descriptor, dest []byte, offset int64) (int, error)
-	// Failed reports, best effort, that a read of film failed, so that the
-	// daemon retries it and marks it changed once it is readable (A-17).
-	Failed(film filmfile.Descriptor)
+	// Failed reports that a read of film failed, so that the daemon retries
+	// it and marks it changed once it is readable (A-17). A report that
+	// does not arrive, because the daemon is down, is sent again.
+	Failed(film filmfile.Descriptor) error
 }
+
+// ReportRetry is how often failures the daemon has not yet accepted are
+// sent again; maxUnreported bounds how many are kept.
+const (
+	ReportRetry   = 10 * time.Second
+	maxUnreported = 10000
+)
 
 // HealthName is the health file at the mount's root. Jellyfin ignores
 // dot-files, and only the mount's own user may open it.
@@ -112,6 +120,9 @@ type Mount struct {
 	started        time.Time
 	requestTimeout bool
 
+	unreportedMutex sync.Mutex
+	unreported      map[string]filmfile.Descriptor
+
 	unhealthy chan error
 	stop      chan struct{}
 	stopOnce  sync.Once
@@ -152,7 +163,8 @@ func Start(options Options) (*Mount, error) {
 		return nil, fmt.Errorf("the generated root %q is not a readable directory", options.Backing)
 	}
 	m := &Mount{options: options, allowed: map[uint32]bool{}, self: uint32(os.Geteuid()),
-		inodes: inodeNumbers{numbers: map[string]uint64{}, next: 2}, unhealthy: make(chan error, 1), stop: make(chan struct{})}
+		inodes: inodeNumbers{numbers: map[string]uint64{}, next: 2}, unhealthy: make(chan error, 1), stop: make(chan struct{}),
+		unreported: map[string]filmfile.Descriptor{}}
 	for _, uid := range options.AllowedUIDs {
 		m.allowed[uid] = true
 	}
@@ -197,6 +209,7 @@ func Start(options Options) (*Mount, error) {
 		return nil, ErrNoRequestTimeout
 	}
 	go m.watchdog()
+	go m.resendFailures()
 	return m, nil
 }
 
@@ -277,6 +290,45 @@ func (m *Mount) watchdog() {
 			default:
 			}
 			return
+		}
+	}
+}
+
+// reportFailure tells the daemon a film's read failed, keeping it to send
+// again if the daemon does not take it, as when the daemon itself is down.
+func (m *Mount) reportFailure(film filmfile.Descriptor) {
+	if m.options.Reader.Failed(film) == nil {
+		return
+	}
+	m.unreportedMutex.Lock()
+	if len(m.unreported) < maxUnreported {
+		m.unreported[film.Reference] = film
+	}
+	m.unreportedMutex.Unlock()
+}
+
+func (m *Mount) resendFailures() {
+	ticker := time.NewTicker(ReportRetry)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-m.stop:
+			return
+		case <-ticker.C:
+		}
+		m.unreportedMutex.Lock()
+		pending := make([]filmfile.Descriptor, 0, len(m.unreported))
+		for _, film := range m.unreported {
+			pending = append(pending, film)
+		}
+		m.unreportedMutex.Unlock()
+		for _, film := range pending {
+			if m.options.Reader.Failed(film) != nil {
+				break // the daemon is still away; try again later
+			}
+			m.unreportedMutex.Lock()
+			delete(m.unreported, film.Reference)
+			m.unreportedMutex.Unlock()
 		}
 	}
 }
@@ -608,7 +660,7 @@ func (n *node) readFilm(ctx context.Context, film filmfile.Descriptor, dest []by
 		n.mount.readErrors.Add(1)
 		if ctx.Err() == nil || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			// A failure, not the reader giving up: retry and mark changed.
-			go n.mount.options.Reader.Failed(film)
+			go n.mount.reportFailure(film)
 		}
 		return nil, syscall.EIO
 	}

@@ -26,10 +26,15 @@ type reader struct {
 	block   atomic.Bool
 	failed  chan string
 	reads   atomic.Int64
+	// away refuses failure reports, as a daemon that is down does.
+	away atomic.Bool
 }
 
 func (r *reader) Read(ctx context.Context, film filmfile.Descriptor, dest []byte, offset int64) (int, error) {
 	r.reads.Add(1)
+	if r.away.Load() {
+		return 0, errors.New("the daemon is down")
+	}
 	if r.block.Load() {
 		<-ctx.Done()
 		return 0, ctx.Err()
@@ -40,7 +45,13 @@ func (r *reader) Read(ctx context.Context, film filmfile.Descriptor, dest []byte
 	return copy(dest, r.content[offset:]), nil
 }
 
-func (r *reader) Failed(film filmfile.Descriptor) { r.failed <- film.Reference }
+func (r *reader) Failed(film filmfile.Descriptor) error {
+	if r.away.Load() {
+		return errors.New("the daemon is down")
+	}
+	r.failed <- film.Reference
+	return nil
+}
 
 type fixture struct {
 	backing, mountpoint string
@@ -332,5 +343,25 @@ func TestTheMountRefusesAKernelWithoutRequestTimeouts(t *testing.T) {
 	mounts, _ := os.ReadFile("/proc/self/mountinfo")
 	if strings.Contains(string(mounts), mountpoint) {
 		t.Fatal("a refused mount was left mounted")
+	}
+}
+
+// C-FS-5: a failure the daemon cannot take, because it is down, is kept and
+// sent again once it is back, so the film is still healed.
+func TestAFailureIsReportedOnceTheDaemonReturns(t *testing.T) {
+	f := start(t, nil)
+	f.reader.away.Store(true)
+	if _, err := os.ReadFile(f.shown(filmPath)); !errors.Is(err, syscall.EIO) {
+		t.Fatalf("a read with the daemon down should fail: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	f.reader.away.Store(false)
+	select {
+	case got := <-f.reader.failed:
+		if got != reference {
+			t.Fatalf("reported %s", got)
+		}
+	case <-time.After(ReportRetry + 5*time.Second):
+		t.Fatal("the failure was not reported once the daemon returned")
 	}
 }

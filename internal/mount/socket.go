@@ -88,14 +88,20 @@ func (reader *SocketReader) Report(ctx context.Context, report Report) error {
 	return nil
 }
 
-func (reader *SocketReader) Failed(film filmfile.Descriptor) {
+func (reader *SocketReader) Failed(film filmfile.Descriptor) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://jellymesh"+FilmPath(film.Reference)+"/failed", nil)
 	if err != nil {
-		return
+		return err
 	}
-	if response, err := reader.client.Do(request); err == nil {
-		response.Body.Close()
+	response, err := reader.client.Do(request)
+	if err != nil {
+		return err
 	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("the read service answered %d", response.StatusCode)
+	}
+	return nil
 }
