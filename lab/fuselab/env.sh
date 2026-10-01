@@ -77,6 +77,26 @@ print(f"media: {len(works)} films")
 PY
 }
 
+# shows makes one series of three episodes from the real films, when TV=1,
+# for the migration test of episodes (M-14).
+shows() {
+  python3 - "$FILMS" "$BASE/media/Shows" <<'PY'
+import os, sys
+films, out = sys.argv[1], sys.argv[2]
+real = sorted(f for f in os.listdir(films) if f.endswith(".mkv"))
+show = os.path.join(out, "Probe Show (2019)")
+os.makedirs(os.path.join(show, "Season 01"), exist_ok=True)
+with open(os.path.join(show, "tvshow.nfo"), "w") as handle:
+    handle.write('<?xml version="1.0"?><tvshow><title>Probe Show</title><year>2019</year>'
+                 '<uniqueid type="tvdb" default="true">81189</uniqueid><tvdbid>81189</tvdbid><lockdata>true</lockdata></tvshow>')
+for n, film in enumerate(real, 1):
+    target = os.path.join(show, "Season 01", f"Probe Show S01E{n:02d}.mkv")
+    if not os.path.exists(target):
+        os.link(os.path.join(films, film), target)
+print("shows: 1 series, 3 episodes")
+PY
+}
+
 start_mount() {
   docker run -d --name $LAB-mount --restart unless-stopped --user 0:0 --network none \
     --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined --memory 256m \
@@ -109,6 +129,8 @@ up() {
   build
   mkdir -p "$BASE/state" "$BASE/share" "$BASE/generated"
   media
+  mkdir -p "$BASE/media/Shows"
+  [ "${TV:-0}" = 1 ] && shows
   docker network create $NET >/dev/null
   # The node writes the generated root as uid 65532; Jellyfin's volumes are 7777's.
   docker volume create $LAB-dst-jf-config >/dev/null; docker volume create $LAB-dst-jf-cache >/dev/null
@@ -116,7 +138,7 @@ up() {
     sh -c "chown 65532:65532 /g && chown -R $JF_UID:$JF_UID /c /k" >/dev/null
 
   docker run -d --name $LAB-src-jf --restart unless-stopped --network $NET --user "$(id -u):$(id -g)" --memory 2g \
-    -p 127.0.0.1:$SRC_PORT:8096 -v $LAB-src-jf-config:/config -v "$BASE/media/Movies:/media/movies:ro" jellyfin/jellyfin:10.11.11 >/dev/null
+    -p 127.0.0.1:$SRC_PORT:8096 -v $LAB-src-jf-config:/config -v "$BASE/media/Movies:/media/movies:ro" -v "$BASE/media/Shows:/media/shows:ro" jellyfin/jellyfin:10.11.11 >/dev/null
   python3 "$here/setup.py" source http://127.0.0.1:$SRC_PORT "$BASE"
   docker run -d --name $LAB-proxy --restart unless-stopped --network $NET -p 127.0.0.1:$PROXY_PORT:8300 fuselab-proxy:latest -target http://$LAB-src-jf:8096 >/dev/null
   docker run -d --name $LAB-src --restart unless-stopped --network $NET -v $LAB-src-data:/data \
@@ -134,6 +156,10 @@ up() {
   dst_jm found fuselab >/dev/null
   library=$(src_jm libraries | json 'print([l.get("id") or l.get("Id") for l in json.load(sys.stdin) if (l.get("name") or l.get("Name"))=="Movies"][0])')
   src_jm publish "$library" -root /media/movies >/dev/null
+  if [ "${TV:-0}" = 1 ]; then
+    library=$(src_jm libraries | json 'print([l.get("id") or l.get("Id") for l in json.load(sys.stdin) if (l.get("name") or l.get("Name"))=="Shows"][0])')
+    src_jm publish "$library" -root /media/shows >/dev/null
+  fi
   code=$(dst_jm invite -valid-for 1h | json 'print(json.load(sys.stdin)["short_code"])')
   src_jm join -address $LAB-dst:8443 -code "$code" -wait 2m >"$BASE/state/join.log" 2>&1 &
   join=$!
@@ -154,6 +180,8 @@ up() {
     python3 "$here/setup.py" libraries http://127.0.0.1:$DST_PORT "$BASE"
   else
     LIB_NAME="Jellymesh Movies (strm)" LIB_PATH=/generated/Movies python3 "$here/setup.py" libraries http://127.0.0.1:$DST_PORT "$BASE"
+    [ "${TV:-0}" = 1 ] && LIB_NAME="Jellymesh Shows (strm)" LIB_PATH="/generated/TV Shows" LIB_TYPE=tvshows \
+      python3 "$here/setup.py" libraries http://127.0.0.1:$DST_PORT "$BASE"
   fi
 }
 

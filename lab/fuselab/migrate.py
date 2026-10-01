@@ -3,7 +3,7 @@ state. Runs against a second lab instance started in strm mode:
 
     LAB=fm NET=fusemig SRC_PORT=18240 DST_PORT=18250 PROXY_PORT=18330 \\
       FUSELAB_BASE=~/.local/share/jellymesh-fusemig SYNTHETIC=0 PRESENTATION=strm ./env.sh up
-    LAB=fm ... python3 migrate.py
+    LAB=fm ... python3 migrate.py        (TV=1 on both adds a series of three episodes)
 
 It plays a film through the .strm library, gives three films a watched state,
 a resume position, and a favourite, switches the node to FUSE as
@@ -61,6 +61,23 @@ wanted = {"Back to the Future": {"Played": True},
 for name, data in wanted.items():
     jf.call("POST", f"/UserItems/{old[name]['Id']}/UserData", {"userId": me}, body=data)
 before = {name: state(old[name]["Id"], me) for name in wanted}
+
+
+def episodes(library):
+    items = jf.call("GET", "/Items", {"ParentId": jf.library_id(library), "Recursive": "true", "IncludeItemTypes": "Episode",
+                                      "Fields": "Path"})["Items"]
+    return {f"S{i.get('ParentIndexNumber', 0):02d}E{i.get('IndexNumber', 0):02d}": i for i in items}
+
+
+TV = os.environ.get("TV") == "1"
+OLD_TV, NEW_TV = "Jellymesh Shows (strm)", "Jellymesh Shows"
+wanted_tv = {"S01E01": {"Played": True}, "S01E02": {"PlaybackPositionTicks": 12 * 60 * 10**7}, "S01E03": {"IsFavorite": True}}
+if TV:
+    old_tv = episodes(OLD_TV)
+    report("before: episodes in the .strm library", len(old_tv))
+    for key, data in wanted_tv.items():
+        jf.call("POST", f"/UserItems/{old_tv[key]['Id']}/UserData", {"userId": me}, body=data)
+    before_tv = {key: state(old_tv[key]["Id"], me) for key in wanted_tv}
 report("before: state set", json.dumps(before))
 
 # The switch, as the operator guide says: the node in fuse mode, the mount,
@@ -82,6 +99,10 @@ report("switch: .strm files left", sum(1 for _, _, files in os.walk(os.path.join
 jf.call("POST", "/Library/VirtualFolders", {"name": NEW, "collectionType": "movies", "paths": ["/remote/films/Movies"], "refreshLibrary": "false"},
         {"LibraryOptions": {"EnableRealtimeMonitor": False, "EnableTrickplayImageExtraction": False, "EnableChapterImageExtraction": False,
                             "SaveLocalMetadata": False, "MetadataSavers": [], "EnableInternetProviders": False}})
+if TV:
+    jf.call("POST", "/Library/VirtualFolders", {"name": NEW_TV, "collectionType": "tvshows", "paths": ["/remote/films/TV Shows"], "refreshLibrary": "false"},
+            {"LibraryOptions": {"EnableRealtimeMonitor": False, "EnableTrickplayImageExtraction": False, "EnableChapterImageExtraction": False,
+                                "SaveLocalMetadata": False, "MetadataSavers": [], "EnableInternetProviders": False}})
 jf.scan()
 new = by_name(NEW)
 report("after: films in the .strm library", len(by_name(OLD)))
@@ -89,13 +110,26 @@ report("after: films in the FUSE library", len(new))
 after = {name: state(new[name]["Id"], me) for name in wanted if name in new}
 report("after: state on the new items", json.dumps(after))
 ok = after == before
+if TV:
+    new_tv = episodes(NEW_TV)
+    report("after: episodes in the .strm / FUSE libraries", f"{len(episodes(OLD_TV))} / {len(new_tv)}")
+    after_tv = {key: state(new_tv[key]["Id"], me) for key in wanted_tv if key in new_tv}
+    report("after: episode state", json.dumps(after_tv))
+    report("before: episode state was", json.dumps(before_tv))
+    ok = ok and after_tv == before_tv
 report("after: a film plays through the mount", f"{read(new['Back to the Future']['Id'])} bytes")
 
 # The operator then removes the empty .strm library.
 old_id = [l for l in jf.call("GET", "/Library/VirtualFolders") if l["Name"] == OLD][0]
 jf.call("DELETE", "/Library/VirtualFolders", {"name": OLD, "refreshLibrary": "true"})
+if TV:
+    jf.call("DELETE", "/Library/VirtualFolders", {"name": OLD_TV, "refreshLibrary": "true"})
 jf.scan()
 again = {name: state(new[name]["Id"], me) for name in wanted if name in new}
 report("after removing the .strm library and a scan", json.dumps(again))
 ok = ok and again == before
+if TV:
+    again_tv = {key: state(episodes(NEW_TV)[key]["Id"], me) for key in wanted_tv}
+    report("after removing them: episode state", json.dumps(again_tv))
+    ok = ok and again_tv == before_tv
 print("M-14", "PASS" if ok else "FAIL")

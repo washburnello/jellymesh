@@ -66,8 +66,13 @@ def source(url, base):
     options = dict(OPTIONS, EnableInternetProviders=False)
     jf.call("POST", "/Library/VirtualFolders", {"name": "Movies", "collectionType": "movies", "paths": ["/media/movies"], "refreshLibrary": "true"},
             {"LibraryOptions": options})
-    library = jf.library_id("Movies")
-    service_user(jf, base, "source", [library])
+    libraries = [jf.library_id("Movies")]
+    if os.environ.get("TV") == "1":
+        tv = dict(OPTIONS, TypeOptions=[{"Type": t, "MetadataFetchers": [], "ImageFetchers": []} for t in ("Series", "Season", "Episode")])
+        jf.call("POST", "/Library/VirtualFolders", {"name": "Shows", "collectionType": "tvshows", "paths": ["/media/shows"], "refreshLibrary": "true"},
+                {"LibraryOptions": tv})
+        libraries.append(jf.library_id("Shows"))
+    service_user(jf, base, "source", libraries)
     expected = len([d for d in os.listdir(os.path.join(base, "media", "Movies"))])
     for _ in range(120):
         items = jf.items("Movies", "ProviderIds,MediaSources")
@@ -92,12 +97,14 @@ def destination(url, base):
 def libraries(url, base):
     name = os.environ.get("LIB_NAME", "Jellymesh Movies")
     path = os.environ.get("LIB_PATH", "/remote/films/Movies")
+    kind = os.environ.get("LIB_TYPE", "movies")
     jf = Jellyfin(url, secrets_file(base)["destination"]["token"])
     if not any(l["Name"] == name for l in jf.call("GET", "/Library/VirtualFolders")):
-        jf.call("POST", "/Library/VirtualFolders", {"name": name, "collectionType": "movies",
+        jf.call("POST", "/Library/VirtualFolders", {"name": name, "collectionType": kind,
                                                     "paths": [path], "refreshLibrary": "false"}, {"LibraryOptions": OPTIONS})
     seconds, status = jf.scan()
-    print(f"destination: scanned in {seconds} s ({status}); {len(jf.items(name))} films in {name}")
+    count = jf.call("GET", "/Items", {"ParentId": jf.library_id(name), "Recursive": "true", "IncludeItemTypes": "Movie,Episode"})["TotalRecordCount"]
+    print(f"destination: scanned in {seconds} s ({status}); {count} films or episodes in {name}")
 
 
 if __name__ == "__main__":
