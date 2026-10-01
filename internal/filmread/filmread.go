@@ -109,6 +109,10 @@ type Server struct {
 	reportMutex sync.Mutex
 	report      json.RawMessage
 	reported    time.Time
+	mountStart  string
+
+	readMutex sync.Mutex
+	lastRead  map[string]time.Time
 
 	paceMutex sync.Mutex
 	paces     map[string]*bucket
@@ -129,7 +133,7 @@ func New(options Options) *Server {
 	if options.sleep == nil {
 		options.sleep = sleep
 	}
-	server := &Server{options: options, streaks: map[string]*streak{}, failed: map[string]time.Time{}, paces: map[string]*bucket{}}
+	server := &Server{options: options, streaks: map[string]*streak{}, failed: map[string]time.Time{}, paces: map[string]*bucket{}, lastRead: map[string]time.Time{}}
 	server.cache = &cache{chunks: map[chunkKey]*chunk{}, order: list.New(), capacity: int(max(options.CacheBytes/ChunkSize, MaxAhead+2)), fetch: server.fetch, now: options.now}
 	server.loadFailed()
 	return server
@@ -160,11 +164,50 @@ func (server *Server) mountReport(response http.ResponseWriter, request *http.Re
 		http.Error(response, "a report is a JSON object", http.StatusBadRequest)
 		return
 	}
+	var started struct {
+		Started string `json:"started"`
+	}
+	json.Unmarshal(body, &started)
 	server.reportMutex.Lock()
+	restarted := server.mountStart != "" && started.Started != "" && started.Started != server.mountStart
 	server.report, server.reported = body, server.options.now()
+	if started.Started != "" {
+		server.mountStart = started.Started
+	}
 	server.reportMutex.Unlock()
+	if restarted {
+		server.afterMountRestart()
+	}
 	response.WriteHeader(http.StatusNoContent)
 }
+
+// RestartWindow is how far before a mount restart a film's reads may have
+// been cut off by it.
+const RestartWindow = 2 * time.Minute
+
+// afterMountRestart marks every film read shortly before the mount
+// restarted as failed. A read the dying mount had in flight failed in the
+// kernel, never reached this service, and could not be reported, so a probe
+// cut off that way would otherwise never be retried (lab G2-C).
+func (server *Server) afterMountRestart() {
+	cutoff := server.options.now().Add(-RestartWindow - ReportGrace)
+	server.readMutex.Lock()
+	var recent []string
+	for reference, at := range server.lastRead {
+		if at.After(cutoff) {
+			recent = append(recent, reference)
+		}
+	}
+	server.readMutex.Unlock()
+	for _, reference := range recent {
+		server.markFailed(reference)
+	}
+	server.options.Logger.Printf("filmread: the mount restarted; %d recently read films will be checked", len(recent))
+}
+
+// ReportGrace allows for the interval between a restarted mount's start
+// and its first report.
+const ReportGrace = 30 * time.Second
 
 // MountReport returns the mount's latest report and when it came, or a nil
 // report if none has.
@@ -242,6 +285,16 @@ func (server *Server) read(response http.ResponseWriter, request *http.Request) 
 			}
 		}
 	}
+	server.readMutex.Lock()
+	server.lastRead[reference] = server.options.now()
+	if len(server.lastRead) > 4096 {
+		for held, at := range server.lastRead {
+			if server.options.now().Sub(at) > RestartWindow+ReportGrace {
+				delete(server.lastRead, held)
+			}
+		}
+	}
+	server.readMutex.Unlock()
 	item := target{record: record, size: size}
 	out := make([]byte, 0, length)
 	for position := offset; position < offset+length; {

@@ -408,3 +408,41 @@ func TestPlaybackIsNeverPaced(t *testing.T) {
 		t.Fatalf("a low bitrate past its burst: waited %s in all, %s at worst", *slowWaited, worst)
 	}
 }
+
+// C-FS-5: when the mount restarts, films read shortly before are retried and
+// marked changed, since a probe the dying mount cut off was never reported;
+// films read long before are not.
+func TestFilmsReadBeforeAMountRestartAreRetried(t *testing.T) {
+	f := newFixture(t, ChunkSize, Options{})
+	other := "fedcba9876543210fedcba9876543210"
+	f.resolver.records[other] = store.Materialized{SourceNodeID: "cedar", ItemID: "film", LibraryID: "lib", Reference: other}
+	report := func(started string) {
+		response, err := http.Post(f.http.URL+"/v1/mount", "application/json", strings.NewReader(`{"started":"`+started+`"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+	}
+	report("first")
+	f.read(t, other, 0, 100)
+	f.now.Add(int64(10 * time.Minute))
+	f.read(t, reference, 0, 100)
+	report("first") // the same mount: nothing happens
+	if f.server.Stats().Failed != 0 {
+		t.Fatal("a report from the same mount marked films")
+	}
+	f.now.Add(int64(20 * time.Second))
+	report("second")
+	if f.server.Stats().Failed != 1 {
+		t.Fatalf("only the recently read film should be retried: %d", f.server.Stats().Failed)
+	}
+	f.server.HealOnce(context.Background())
+	select {
+	case got := <-f.healed:
+		if got != reference {
+			t.Fatalf("healed %s", got)
+		}
+	default:
+		t.Fatal("the recently read film should be marked changed")
+	}
+}
