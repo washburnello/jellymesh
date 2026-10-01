@@ -450,10 +450,12 @@ func (server *Server) readAhead(reference string, index int64) int64 {
 	return min(int64(1)<<min(current.count, 4), MaxAhead)
 }
 
+// chunkKey names a chunk by everything it depends on. A reference can be
+// reused for another item at the same path (C-MA-8), so the item is part of
+// the key, and a file of another size is another file.
 type chunkKey struct {
-	reference string
-	size      int64
-	index     int64
+	reference, source, item string
+	size, index             int64
 }
 
 type chunk struct {
@@ -476,7 +478,7 @@ type cache struct {
 }
 
 func (c *cache) get(item target, index int64) *chunk {
-	key := chunkKey{item.record.Reference, item.size, index}
+	key := chunkKey{item.record.Reference, item.record.SourceNodeID, item.record.ItemID, item.size, index}
 	c.mutex.Lock()
 	if existing, ok := c.chunks[key]; ok {
 		stale := false

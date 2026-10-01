@@ -78,6 +78,34 @@ def settle(seconds=15, timeout=900):
         time.sleep(1)
 
 
+def d_threads():
+    """Jellyfin threads in uninterruptible sleep now, as {tid: comm@wchan}."""
+    script = ('for t in /proc/[0-9]*/task/*; do s=$(cut -d" " -f3 $t/stat 2>/dev/null); '
+              '[ "$s" = D ] && echo "${t##*/} $(cat $t/comm 2>/dev/null)@$(cat $t/wchan 2>/dev/null)"; done')
+    out = subprocess.run(["docker", "exec", "fl-dst-jf", "sh", "-c", script], capture_output=True, text=True, timeout=30).stdout
+    return dict(line.split(" ", 1) for line in out.splitlines() if " " in line)
+
+
+def stuck_for(seconds=25):
+    """Threads in D at the start and still in D after `seconds`: a thread
+    briefly in D for ordinary disk I/O is not stuck."""
+    first = d_threads()
+    if not first:
+        return {}
+    time.sleep(seconds)
+    later = d_threads()
+    return {tid: later[tid] for tid in first if tid in later}
+
+
+def stuck_detail():
+    """Names each Jellyfin thread in D, with what the kernel says it waits
+    on, so that a stuck thread can be told from a slow disk."""
+    script = ('for t in /proc/[0-9]*/task/*; do s=$(cut -d" " -f3 $t/stat 2>/dev/null); '
+              '[ "$s" = D ] && echo "$(cat $t/comm 2>/dev/null)@$(cat $t/wchan 2>/dev/null)"; done')
+    out = subprocess.run(["docker", "exec", "fl-dst-jf", "sh", "-c", script], capture_output=True, text=True, timeout=30).stdout
+    return ", ".join(sorted(set(out.split()))) or "none"
+
+
 def stuck_threads():
     """Counts Jellyfin container threads in uninterruptible sleep (D)."""
     out = subprocess.run(["docker", "exec", "fl-dst-jf", "sh", "-c", "cat /proc/[0-9]*/task/*/stat 2>/dev/null"],
@@ -528,7 +556,7 @@ def g7(until="07:30", log_path=None):
         try:
             if event == "add-films":
                 added += 1
-                add_films(3, f"s{added:03d}")
+                add_films(3, f"s{int(time.time()) % 100000:05d}")
                 time.sleep(65)  # the mount's cache time
                 jf.scan()
                 new_ids, _ = snapshot()
@@ -556,12 +584,11 @@ def g7(until="07:30", log_path=None):
             recovery = recovered(random.randint(1, 30), timeout=120)
             if recovery is None:
                 problems.append("no recovery within 120 s")
-            stuck, _ = stuck_threads()
+            stuck = stuck_for(25)
             if stuck:
-                time.sleep(25)
-                stuck, _ = stuck_threads()
-                if stuck:
-                    problems.append(f"{stuck} threads stuck in D after 30 s")
+                host = subprocess.run(["sh", "-c", "grep -E '^(Dirty|Writeback):' /proc/meminfo | tr -s ' ' | tr '\\n' ' '"],
+                                      capture_output=True, text=True).stdout.strip()
+                problems.append(f"{len(stuck)} threads in D for 25 s or more ({', '.join(sorted(set(stuck.values())))}; host {host})")
             if monitor.worst > 3 and not restart_expected:
                 problems.append(f"Jellyfin ping took {monitor.worst:.1f} s")
             ids, now_watched = snapshot()

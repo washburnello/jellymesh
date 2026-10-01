@@ -446,3 +446,26 @@ func TestFilmsReadBeforeAMountRestartAreRetried(t *testing.T) {
 		t.Fatal("the recently read film should be marked changed")
 	}
 }
+
+// C-FS-4: a reference reused for another item at the same path (C-MA-8) is
+// read from that item, never from chunks held for the one before, even at
+// the same size.
+func TestAReusedReferenceReadsItsNewItem(t *testing.T) {
+	f := newFixture(t, ChunkSize, Options{})
+	if _, body := f.read(t, reference, 0, 100); !bytes.Equal(body, f.content[:100]) {
+		t.Fatal("first read")
+	}
+	replacement := make([]byte, len(f.content))
+	for index := range replacement {
+		replacement[index] = byte(index*11 + 5)
+	}
+	f.source.content = replacement
+	f.resolver.mutex.Lock()
+	record := f.resolver.records[reference]
+	record.ItemID = "another-film"
+	f.resolver.records[reference] = record
+	f.resolver.mutex.Unlock()
+	if _, body := f.read(t, reference, 0, 100); !bytes.Equal(body, replacement[:100]) {
+		t.Fatal("a reused reference was served the previous item's bytes")
+	}
+}

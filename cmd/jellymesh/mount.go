@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -93,6 +94,7 @@ func runMount(args []string) {
 			time.Sleep(mount.ReportInterval)
 		}
 	}()
+	var stopping atomic.Bool
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT, syscall.SIGUSR1, syscall.SIGUSR2)
 	go func() {
@@ -105,6 +107,7 @@ func runMount(args []string) {
 				log.Print("mount: simulated deadlock")
 				m.Freeze()
 			case received == syscall.SIGTERM || received == syscall.SIGINT:
+				stopping.Store(true)
 				if err := m.Unmount(); err != nil {
 					log.Printf("mount: unmount: %v", err)
 					os.Exit(1)
@@ -114,6 +117,13 @@ func runMount(args []string) {
 	}()
 	if err := m.Wait(); err != nil {
 		log.Printf("mount: %v; exiting to be restarted", err)
+		os.Exit(3)
+	}
+	if !stopping.Load() {
+		// The kernel aborted the connection (its request timeout) or it
+		// was unmounted from outside: not a stop anyone asked for, so exit
+		// as a failure, for any restart policy.
+		log.Print("mount: the mount ended without being asked to; exiting to be restarted")
 		os.Exit(3)
 	}
 }

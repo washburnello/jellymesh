@@ -104,7 +104,22 @@ were found and fixed:
   film read in the two minutes before a mount restart. Rerun: 11 of 12,
   then 12 of 12 after healing and a rescan.
 
-**G7, soak:** started 00:45, until 07:30. See below.
+**G7, soak: PASS** (2026-10-01 01:23 to 07:30, 331 cycles, 0 with
+problems). Two films streamed continuously, with one random disruption per
+cycle: mount crashed 62 times, frozen 46, deadlocked 36; source refused 36,
+hung 34, crawled 25; destination node stopped 33; Jellyfin restarted 11;
+films added 19 times (3 each; 54 to 111 items); scans 29. After every cycle
+a fresh read worked (worst 12.1 s), no Jellyfin thread stayed in D, the
+ping stayed fast, and no item or watched state was lost. The mount
+restarted 145 times by itself. Memory at the end: mount 12 MiB, node
+539 MiB (a 256 MiB chunk cache under GOMEMLIMIT 600 MiB), Jellyfin 296 MiB.
+
+Two earlier starts of the soak were stopped for harness flaws, not product
+ones. At 00:45, cycle 18 counted two Jellyfin threads in D at two moments
+25 s apart, while builds were running on the same disk. A later count found
+none, and the check did not compare thread identities. At 01:14, the
+restarted run reused the earlier run's titles for added films. The check
+now follows thread IDs, and added films get unique titles.
 
 **G4, real devices:** needs the user's Roku and phones, against
 `http://192.168.87.20:18230`.
