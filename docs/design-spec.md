@@ -1168,8 +1168,12 @@ The read service is a second line of defence (#69, C-FS-10):
 
 Playback and transcoding need no more than real time, so they never wait:
 a viewer reading at the film's own pace refills the burst faster than it
-drains. A whole-film extraction costs about four viewers' worth of
-bandwidth instead of the source's full uplink. That playback and
+drains. A whole-film extraction costs at most about four viewers' worth of
+bandwidth instead of the source's full uplink. In the gate lab, Jellyfin's
+trickplay extraction was itself bounded by decoding at about 5.6 times a
+2 Mbit/s film's bitrate, so pacing trims such an extraction by only a third,
+after the burst: it guards against fast extraction, and extraction off
+remains the requirement. That playback and
 transcoding through Jellyfin are unaffected is to be shown by rerunning G3
 against the build (#73). `jellymesh status` shows the total time reads
 have waited (`reads.paced_seconds`).
