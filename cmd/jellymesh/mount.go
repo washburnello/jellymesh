@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -32,7 +33,25 @@ func runMount(args []string) {
 	socket := flags.String("socket", env("JELLYMESH_READ_SOCKET", "/run/jellymesh/read.sock"), "the node's read socket")
 	uids := flags.String("allow-uids", env("JELLYMESH_MOUNT_ALLOW_UIDS", ""), "comma-separated uids that may read films (Jellyfin's)")
 	faults := flags.Bool("test-faults", env("JELLYMESH_MOUNT_TEST_FAULTS", "") == "1", "SIGUSR1 crashes, SIGUSR2 freezes (for tests)")
+	check := flags.Bool("check", false, "test whether this host can show films through FUSE, print why, and exit")
 	flags.Parse(args)
+
+	if *check {
+		findings, ok := mount.Check(*mountpoint)
+		for _, finding := range findings {
+			mark := "ok  "
+			if !finding.OK {
+				mark = "FAIL"
+			}
+			fmt.Printf("%s %-16s %s\n", mark, finding.Check, finding.Detail)
+		}
+		if !ok {
+			fmt.Println("\nThis host cannot present films through FUSE; keep JELLYMESH_PRESENTATION=strm.")
+			os.Exit(1)
+		}
+		fmt.Println("\nThis host can present films through FUSE (JELLYMESH_PRESENTATION=fuse).")
+		return
+	}
 
 	var allowed []uint32
 	for _, field := range strings.Split(*uids, ",") {
@@ -49,8 +68,9 @@ func runMount(args []string) {
 		log.Fatal("mount: set JELLYMESH_MOUNT_ALLOW_UIDS to the uid Jellyfin runs as")
 	}
 
+	reader := mount.NewSocketReader(*socket)
 	m, err := mount.Start(mount.Options{
-		Backing: *backing, Mountpoint: *mountpoint, Reader: mount.NewSocketReader(*socket),
+		Backing: *backing, Mountpoint: *mountpoint, Reader: reader,
 		AllowedUIDs: allowed, AllowOther: true, Logger: log.Default(),
 	})
 	if err != nil {
@@ -59,9 +79,18 @@ func runMount(args []string) {
 	log.Printf("mount: showing %s at %s for uids %v, reading films through %s", *backing, *mountpoint, allowed, *socket)
 
 	go func() {
-		for range time.Tick(time.Minute) {
-			stats := m.Stats()
-			log.Printf("mount: reads=%d errors=%d denied=%d", stats.Reads, stats.ReadErrors, stats.Denied)
+		// Report at once, then on every interval, so status shows the mount.
+		for tick := 0; ; tick++ {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := reader.Report(ctx, m.Report()); err != nil && tick%10 == 0 {
+				log.Printf("mount: reporting to the node: %v", err)
+			}
+			cancel()
+			if tick%2 == 1 {
+				stats := m.Stats()
+				log.Printf("mount: reads=%d errors=%d denied=%d", stats.Reads, stats.ReadErrors, stats.Denied)
+			}
+			time.Sleep(mount.ReportInterval)
 		}
 	}()
 	signals := make(chan os.Signal, 1)

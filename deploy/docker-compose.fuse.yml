@@ -1,0 +1,60 @@
+# FUSE presentation (design-spec section 11, A-17, A-18): remote films shown
+# to Jellyfin as ordinary files, so every app plays them, the Jellyfin Roku
+# app included. Use it with the main file, on a Linux host that passes the
+# self-test (docs/operator-fuse.md):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.fuse.yml run --rm jellymesh-mount mount -check
+#   docker compose -f docker-compose.yml -f docker-compose.fuse.yml up -d
+#
+# Jellyfin then mounts /srv/jellymesh-presented with slave propagation, for
+# example "/srv/jellymesh-presented:/jellymesh:ro,rslave", runs as its own
+# uid (JELLYMESH_MOUNT_ALLOW_UIDS below), and gets the folders under
+# /jellymesh/films as separate libraries with trickplay and chapter image
+# extraction off.
+services:
+  jellymesh:
+    environment:
+      JELLYMESH_PRESENTATION: "fuse"
+      JELLYMESH_READ_SOCKET: "/run/jellymesh/read.sock"
+    volumes:
+      - jellymesh-run:/run/jellymesh
+
+  # The only container holding /dev/fuse and CAP_SYS_ADMIN. It holds no key,
+  # token, or address: it reads the generated root and asks the node for
+  # film bytes over the socket in jellymesh-run.
+  jellymesh-mount:
+    image: jellymesh:dev
+    build: ..
+    command: ["mount"]
+    user: "0:0"
+    restart: unless-stopped
+    network_mode: none
+    devices:
+      - /dev/fuse
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      # Docker's default AppArmor profile forbids mount(2).
+      - apparmor:unconfined
+    mem_limit: 256m
+    environment:
+      JELLYMESH_MOUNT_GENERATED: "/generated"
+      JELLYMESH_MOUNT_POINT: "/share/films"
+      JELLYMESH_READ_SOCKET: "/run/jellymesh/read.sock"
+      # The uid Jellyfin runs as. Only it may read film contents.
+      JELLYMESH_MOUNT_ALLOW_UIDS: "7777"
+    volumes:
+      - /srv/jellymesh-generated:/generated:ro
+      - jellymesh-run:/run/jellymesh
+      # Shared, so the mount, and a fresh one after a restart, reaches
+      # Jellyfin's slave bind of the same folder.
+      - type: bind
+        source: /srv/jellymesh-presented
+        target: /share
+        bind:
+          propagation: rshared
+    healthcheck:
+      disable: true
+
+volumes:
+  jellymesh-run:

@@ -179,7 +179,7 @@ rather than implied.
 | C-FS-6 | Switching a node's presentation moves every item to its new form at the next pass, removing the old one, in either direction | `TestSwitchingPresentationMovesEveryItem` | PASS — the materializer's part. That Jellyfin reattaches watch history across the move is M-14 (#72) |
 | C-FS-7 | A mount that stops answering cannot hang Jellyfin: the kernel aborts it after the request timeout, through the patched go-fuse; the watchdog finds it and the process exits to be restarted; and start detaches a dead mount and takes its place | `TestTheKernelAbortsAFrozenMount`, `TestTheWatchdogFindsAFrozenMount`, `TestStartReplacesADeadMount` | PASS — with a 1 s timeout a frozen mount's reader got "software caused connection abort" after 15 s, the kernel's check interval |
 | C-FS-8 | A remote film plays through the whole chain in FUSE presentation: published by its source, written as a descriptor, shown by the mount beside its subtitle and poster, and read through the read socket as the source's exact bytes; opting out stops reads at once, before any catalog pass | `TestARemoteFilmPlaysThroughTheMount` | PASS |
-| C-FS-9 | A node chooses its presentation by a self-test at setup and after each update, and the mount refuses to run on a kernel without FUSE request timeouts | none yet | PENDING — #70. The refusal is in `mount.Start` (`ErrNoRequestTimeout`), but no host here lacks request timeouts to show it |
+| C-FS-9 | The presentation is the operator's choice, made from `jellymesh mount -check` at setup and after each update, which reports by name whether the FUSE device opens, a filesystem mounts, the kernel offers request timeouts, and the mountpoint's propagation is shared; the mount refuses a kernel without request timeouts and leaves nothing mounted; status shows the configured mode, which never changes by itself, and in FUSE mode the mount's latest report and read counters, warning when the mount has not reported or its propagation is not shared | `TestCheckReportsEachFinding`, `TestPropagationIsReadFromMountinfo`, `TestTheMountRefusesAKernelWithoutRequestTimeouts`, `TestStatusShowsThePresentation` | PASS — A-18. Whether Jellyfin's own container sees the mount is checked by the operator (docs/operator-fuse.md), since the service user cannot browse Jellyfin's filesystem |
 | C-OP-1 | Audit events are recorded with secrets redacted: detail outside an allow-list of identifiers and outcomes is replaced, registered secret material is scrubbed from every field, and enrollment, group log changes including equivocation, and block decisions are audited without the invitation secret appearing in any encoding | `TestSecretsNeverReachTheSink`, `TestEnrollmentIsAuditedWithoutSecrets`, `TestGroupChangesAreAudited`, `TestBlockDecisionsAreAudited`, `TestAuditRepositoryRoundTrip` | PASS |
 | C-OP-2 | Compromise recovery is by re-enrollment: a fresh key is a distinct peer, and readmission requires a new invitation and fresh approval | none yet | DECIDED — see design-spec.md section 8. The mechanism it relies on is covered by C-ID-3, C-TR-4, C-TR-7 and C-PO-5; C-OP-3 is in place and the runbook is C-OP-4 |
 | C-OP-3 | Ejecting a member also revokes its transport trust on every node that applies the ejection, so a compromised key cannot complete a handshake; an ejection by a non-administrator changes nothing | `TestEjectionRevokesTrustOnEveryNode`, `TestReceiversReapplyTheRoleRules` | PASS |
@@ -409,6 +409,24 @@ mount propagation, and a kernel with FUSE request timeouts. About 1 MB per
 film is read at scan time from sources' uplinks. A patch to go-fuse is
 carried until it is upstream. Remote films are in separate libraries rather
 than the main ones.
+
+**A-18. The operator chooses the presentation, helped by a self-test.**
+Assumed 2026-09-30 (#70): a node's presentation is set by
+`JELLYMESH_PRESENTATION`, `strm` by default. `jellymesh mount -check`, run
+in the mount container at setup and after each update, says whether the
+host can run FUSE and, if not, why; the operator sets `fuse` only when it
+passes. Jellymesh never changes the mode itself. `jellymesh status` shows
+the mode and, in FUSE mode, the mount's reports, and warns when the mount
+is silent or its propagation would hide remounts from Jellyfin.
+Rationale: a change of mode moves every remote item to a new path, which
+Jellyfin sees only at its next scan, so it must happen only when someone
+chose it (design-spec section 11). An automatic choice would need the
+daemon to wait for the mount container's verdict at every start, and a
+check failing after an update would silently move every item. An explicit
+setting is predictable, and the self-test makes it an informed one.
+Cost: one more step at setup and after updates. Whether the mount is
+visible inside Jellyfin's container is checked by hand (the service user
+cannot browse Jellyfin's filesystem), as the operator guide describes.
 
 **A-5. Group state replication (C-PO-14 to C-PO-20, C-TR-9).**
 Assumed: group state (owner, epoch, administrators, the roster bound to

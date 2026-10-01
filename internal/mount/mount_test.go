@@ -8,10 +8,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/hanwen/go-fuse/v2/fuse"
 
 	"jellymesh/internal/filmfile"
 )
@@ -304,5 +307,30 @@ func TestTheKernelAbortsAFrozenMount(t *testing.T) {
 	case <-time.After(60 * time.Second):
 		f.mount.frozen.Store(false)
 		t.Fatal("a read of a frozen mount was still blocked after a minute: no request timeout")
+	}
+}
+
+// C-FS-9: on a kernel that does not offer request timeouts the mount refuses
+// to run, and leaves nothing mounted.
+func TestTheMountRefusesAKernelWithoutRequestTimeouts(t *testing.T) {
+	requireFUSE(t)
+	original := offersRequestTimeout
+	offersRequestTimeout = func(*fuse.Server) bool { return false }
+	defer func() { offersRequestTimeout = original }()
+	base := t.TempDir()
+	os.MkdirAll(filepath.Join(base, "generated"), 0o755)
+	mountpoint := filepath.Join(base, "presented")
+	m, err := Start(Options{Backing: filepath.Join(base, "generated"), Mountpoint: mountpoint, Reader: &reader{},
+		AllowedUIDs: []uint32{uint32(os.Getuid())}})
+	defer detach(mountpoint) // whatever happened, leave nothing mounted
+	if m != nil {
+		m.Unmount()
+	}
+	if !errors.Is(err, ErrNoRequestTimeout) {
+		t.Fatalf("an older kernel should be refused: %v", err)
+	}
+	mounts, _ := os.ReadFile("/proc/self/mountinfo")
+	if strings.Contains(string(mounts), mountpoint) {
+		t.Fatal("a refused mount was left mounted")
 	}
 }

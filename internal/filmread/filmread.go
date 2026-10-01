@@ -89,6 +89,10 @@ type Server struct {
 	saveMutex   sync.Mutex
 
 	fetched, served, fetchErrors atomic.Int64
+
+	reportMutex sync.Mutex
+	report      json.RawMessage
+	reported    time.Time
 }
 
 // New returns a read service.
@@ -113,6 +117,7 @@ func (server *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/films/{reference}", server.read)
 	mux.HandleFunc("POST /v1/films/{reference}/failed", server.reportFailed)
+	mux.HandleFunc("POST /v1/mount", server.mountReport)
 	return mux
 }
 
@@ -122,6 +127,27 @@ func (server *Server) Stats() Stats {
 	failed := len(server.failed)
 	server.failedMutex.Unlock()
 	return Stats{Fetched: server.fetched.Load(), Served: server.served.Load(), FetchErrors: server.fetchErrors.Load(), Failed: failed}
+}
+
+// mountReport keeps the mount's latest report, for status.
+func (server *Server) mountReport(response http.ResponseWriter, request *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(request.Body, 64<<10))
+	if err != nil || !json.Valid(body) {
+		http.Error(response, "a report is a JSON object", http.StatusBadRequest)
+		return
+	}
+	server.reportMutex.Lock()
+	server.report, server.reported = body, server.options.now()
+	server.reportMutex.Unlock()
+	response.WriteHeader(http.StatusNoContent)
+}
+
+// MountReport returns the mount's latest report and when it came, or a nil
+// report if none has.
+func (server *Server) MountReport() (json.RawMessage, time.Time) {
+	server.reportMutex.Lock()
+	defer server.reportMutex.Unlock()
+	return server.report, server.reported
 }
 
 // Forget drops whatever is held for a reference, when its item is removed.

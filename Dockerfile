@@ -15,10 +15,14 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/jellymesh ./cmd/je
 # An empty, owner-only data directory for the non-root user, so that a named
 # volume mounted at /data starts out writable by it.
 RUN mkdir -m 0700 /out/data
+# The read socket's directory, shared with the mount container through a
+# named volume, which starts out owned like this.
+RUN mkdir -m 0755 /out/run
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/jellymesh /jellymesh
 COPY --from=build --chown=65532:65532 /out/data /data
+COPY --from=build --chown=65532:65532 /out/run /run/jellymesh
 ENV JELLYMESH_DATA_DIR=/data \
     JELLYMESH_FEDERATION_LISTEN_ADDR=0.0.0.0:8443 \
     JELLYMESH_ADMIN_LISTEN_ADDR=127.0.0.1:8091

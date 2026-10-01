@@ -87,6 +87,12 @@ type Options struct {
 // mount refuses to run (design-spec section 11).
 var ErrNoRequestTimeout = errors.New("this kernel does not offer FUSE request timeouts (Linux 6.14 or later is required)")
 
+// offersRequestTimeout reports whether the kernel offered request timeouts
+// when the mount started. Tests replace it to stand in for an older kernel.
+var offersRequestTimeout = func(server *fuse.Server) bool {
+	return server.KernelSettings().Flags64()&fuse.CAP_REQUEST_TIMEOUT != 0
+}
+
 // Stats count what the mount has served.
 type Stats struct {
 	Reads, ReadErrors, Denied int64
@@ -102,6 +108,9 @@ type Mount struct {
 	frozen  atomic.Bool
 
 	reads, readErrors, denied atomic.Int64
+
+	started        time.Time
+	requestTimeout bool
 
 	unhealthy chan error
 	stop      chan struct{}
@@ -181,8 +190,9 @@ func Start(options Options) (*Mount, error) {
 	if err != nil {
 		return nil, fmt.Errorf("mount: %w", err)
 	}
-	m.server = server
-	if server.KernelSettings().Flags64()&fuse.CAP_REQUEST_TIMEOUT == 0 && !options.AllowWithoutRequestTimeout {
+	m.server, m.started = server, time.Now()
+	m.requestTimeout = offersRequestTimeout(server)
+	if !m.requestTimeout && !options.AllowWithoutRequestTimeout {
 		_ = server.Unmount()
 		return nil, ErrNoRequestTimeout
 	}

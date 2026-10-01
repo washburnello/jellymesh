@@ -1,7 +1,9 @@
 package mount
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -62,6 +64,28 @@ func (reader *SocketReader) Read(ctx context.Context, film filmfile.Descriptor, 
 		return count, err
 	}
 	return count, nil
+}
+
+// Report sends the mount's report to the daemon.
+func (reader *SocketReader) Report(ctx context.Context, report Report) error {
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://jellymesh"+ReportPath, bytes.NewReader(encoded))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := reader.client.Do(request)
+	if err != nil {
+		return err
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("the read service answered %d", response.StatusCode)
+	}
+	return nil
 }
 
 func (reader *SocketReader) Failed(film filmfile.Descriptor) {

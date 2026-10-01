@@ -142,11 +142,12 @@ func decode(response http.ResponseWriter, request *http.Request, into any) bool 
 
 // Status is what the admin API reports about the node.
 type Status struct {
-	NodeID        string           `json:"node_id"`
-	Fingerprint   node.Fingerprint `json:"fingerprint"`
-	PublicAddress string           `json:"public_address"`
-	Group         *GroupStatus     `json:"group,omitempty"`
-	Direct        DirectStatus     `json:"direct"`
+	NodeID        string             `json:"node_id"`
+	Fingerprint   node.Fingerprint   `json:"fingerprint"`
+	PublicAddress string             `json:"public_address"`
+	Group         *GroupStatus       `json:"group,omitempty"`
+	Direct        DirectStatus       `json:"direct"`
+	Presentation  PresentationStatus `json:"presentation"`
 }
 
 type GroupStatus struct {
@@ -171,7 +172,8 @@ type MemberStatus struct {
 
 // Status reports the node's identity and, if it has one, its group.
 func (n *Node) Status(ctx context.Context) (Status, error) {
-	status := Status{NodeID: n.nodeID, Fingerprint: n.identity.Fingerprint(), PublicAddress: n.cfg.PublicAddress(), Direct: n.direct.status()}
+	status := Status{NodeID: n.nodeID, Fingerprint: n.identity.Fingerprint(), PublicAddress: n.cfg.PublicAddress(), Direct: n.direct.status(),
+		Presentation: n.presentationStatus()}
 	if n.direct == nil {
 		status.Direct.OffReason = "direct paths are turned off"
 		if n.directError != "" {

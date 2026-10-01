@@ -41,7 +41,7 @@ hosts that can run it.
 | Linux, Docker | Tested (walnut: Omarchy; cedar: Omarchy with Jellyfin on the host network) |
 | macOS, Windows (Docker Desktop) | Untested for `.strm`. FUSE presentation cannot run there |
 | NAS systems (Synology, Unraid, TrueNAS) | Untested. FUSE needs `/dev/fuse` and mount propagation in Docker |
-| FUSE presentation | Needs Linux with `/dev/fuse`, a privileged mount container, shared mount propagation, and a kernel with FUSE request timeouts (tested on 7.2). It must refuse to run otherwise |
+| FUSE presentation | Built (C-FS-1 to C-FS-9; `docs/operator-fuse.md`), gates G1 to G7 being rerun against the build (#73). Needs Linux with `/dev/fuse`, a privileged mount container, shared mount propagation, and a kernel with FUSE request timeouts (tested on 7.2). `jellymesh mount -check` says whether a host qualifies, and the mount refuses a kernel without request timeouts |
 
 ## Networks
 
